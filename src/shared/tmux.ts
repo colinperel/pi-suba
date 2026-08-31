@@ -259,6 +259,19 @@ export async function applySharedWindowGrid(windowId: string, run = tmuxExec): P
   await run(["select-layout", "-t", windowId, `${layoutChecksum(body)},${body}`])
 }
 
+export class PartialTmuxTargetError extends AggregateError {
+  readonly paneId: string
+
+  constructor(paneId: string, targetError: Error, cleanupError: unknown) {
+    super(
+      [targetError, cleanupError],
+      `Could not configure or remove partial tmux target ${paneId}`,
+    )
+    this.name = "PartialTmuxTargetError"
+    this.paneId = paneId
+  }
+}
+
 async function rollbackTargetPane(
   paneId: string,
   targetError: unknown,
@@ -268,10 +281,7 @@ async function rollbackTargetPane(
   try {
     await run(["kill-pane", "-t", paneId])
   } catch (cleanupError) {
-    throw new AggregateError(
-      [original, cleanupError],
-      `Could not configure or remove partial tmux target ${paneId}`,
-    )
+    throw new PartialTmuxTargetError(paneId, original, cleanupError)
   }
   throw original
 }

@@ -147,9 +147,11 @@ workmux add <handle> --name <handle> --headless --json
 ```
 
 Workmux applies its normal worktree path configuration, file operations, and
-`post_create` hooks. It does not create a workmux-managed session, window,
-pane, layout, or pane command. Pi-suba launches the child in the effective
-working directory returned by workmux.
+`post_create` hooks. These hooks execute shell commands with the parent user's
+permissions, so worktree launches require trusted workmux configuration. Workmux
+does not create a workmux-managed session, window, pane, layout, or pane command.
+Pi-suba launches the child in the effective working directory returned by
+workmux.
 
 The worktree persists when the child finishes. Resume launches reuse the same
 worktree and working directory. Remove it explicitly to discard its branch:

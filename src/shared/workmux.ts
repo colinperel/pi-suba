@@ -1,10 +1,9 @@
-import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import { realpath, stat } from "node:fs/promises"
 import { isAbsolute, relative, sep } from "node:path"
-import { promisify } from "node:util"
 
-const execFileAsync = promisify(execFile)
-const MAX_OUTPUT = 10 * 1024 * 1024
+const MAX_STDOUT = 1024 * 1024
+const STDERR_TAIL = 64 * 1024
 
 export interface WorkmuxWorktree {
   handle: string
@@ -20,6 +19,73 @@ interface HeadlessReceipt {
   branch: string
   worktree_path: string
   working_directory: string
+}
+
+interface ProcessOutput {
+  stdout: string
+  stderr: string
+}
+
+function appendTail(current: string, chunk: Buffer): string {
+  const next = current + chunk.toString()
+  return next.length <= STDERR_TAIL ? next : next.slice(-STDERR_TAIL)
+}
+
+function runWorkmux(
+  args: string[],
+  cwd: string,
+  options: { signal?: AbortSignal; streamStderr?: boolean } = {},
+): Promise<ProcessOutput> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("workmux", args, {
+      cwd,
+      signal: options.signal,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    let outputError: Error | undefined
+    let settled = false
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (outputError) return
+      stdout += chunk.toString()
+      if (Buffer.byteLength(stdout) > MAX_STDOUT) {
+        outputError = Object.assign(
+          new Error("workmux stdout exceeded the headless receipt limit"),
+          { code: "SUBA_OUTPUT_LIMIT" },
+        )
+        child.kill()
+      }
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = appendTail(stderr, chunk)
+      if (options.streamStderr) process.stderr.write(chunk)
+    })
+    child.on("error", (error) => {
+      if (settled) return
+      settled = true
+      Object.assign(error, { stdout, stderr })
+      reject(error)
+    })
+    child.on("close", (code, signal) => {
+      if (settled) return
+      settled = true
+      if (outputError) {
+        Object.assign(outputError, { stdout, stderr })
+        reject(outputError)
+      } else if (code === 0) {
+        resolve({ stdout, stderr })
+      } else {
+        const error = new Error(
+          `workmux exited ${code ?? `after signal ${signal ?? "unknown"}`}`,
+        ) as Error & { code?: number; stdout?: string; stderr?: string }
+        error.code = code ?? undefined
+        error.stdout = stdout
+        error.stderr = stderr
+        reject(error)
+      }
+    })
+  })
 }
 
 function errorText(error: unknown, key: "stdout" | "stderr"): string {
@@ -51,6 +117,20 @@ function receiptError(message: string, stdout: string, stderr: string): Error {
     .filter(Boolean)
     .join("\n")
   return new Error(`${message}${context ? `\n${context}` : ""}`)
+}
+
+function unsupportedContract(stderr: string): boolean {
+  return stderr
+    .split("\n")
+    .some((line) =>
+      /(?:unexpected|unrecognized|unknown).*(?:--headless|--json)|(?:--headless|--json).*(?:unexpected|unrecognized|unknown)/i.test(
+        line,
+      ),
+    )
+}
+
+function isAbort(error: unknown): boolean {
+  return (error instanceof Error && error.name === "AbortError") || errorCode(error) === "ABORT_ERR"
 }
 
 export function worktreeHandle(name: string, childId: string): string {
@@ -110,6 +190,28 @@ export function parseHeadlessReceipt(
   return { handle, branch, sourceCwd, worktreePath, workingDirectory }
 }
 
+async function removeWorktreeHandle(handle: string, sourceCwd: string): Promise<void> {
+  try {
+    await runWorkmux(["remove", "--force", handle], sourceCwd)
+  } catch (error) {
+    const stderr = errorText(error, "stderr")
+    throw new Error(`workmux remove --force ${handle} failed${stderr ? `:\n${tail(stderr)}` : ""}`)
+  }
+}
+
+async function rollbackHandle(handle: string, sourceCwd: string, error: unknown): Promise<never> {
+  const original = error instanceof Error ? error : new Error(String(error))
+  try {
+    await removeWorktreeHandle(handle, sourceCwd)
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [original, rollbackError],
+      `Worktree provisioning failed after workmux created ${handle}. Run 'workmux remove --force ${handle}' from ${sourceCwd}.`,
+    )
+  }
+  throw original
+}
+
 export async function provisionWorktree(
   name: string,
   childId: string,
@@ -117,38 +219,52 @@ export async function provisionWorktree(
   signal?: AbortSignal,
 ): Promise<WorkmuxWorktree> {
   const handle = worktreeHandle(name, childId)
+  let output: ProcessOutput
   try {
-    const { stdout, stderr } = await execFileAsync(
-      "workmux",
+    output = await runWorkmux(
       ["add", handle, "--name", handle, "--headless", "--json"],
-      { cwd: sourceCwd, maxBuffer: MAX_OUTPUT, signal },
+      sourceCwd,
+      { signal, streamStderr: true },
     )
-    const receipt = parseHeadlessReceipt(stdout, stderr, sourceCwd, handle)
-    await validateStoredWorktree(receipt)
-    return receipt
   } catch (error) {
     if (errorCode(error) === "ENOENT")
       throw new Error("pi-suba requires workmux on PATH when worktree: true")
     const stderr = errorText(error, "stderr")
-    if (
-      /(?:unexpected|unrecognized|unknown).*(?:--headless|--json)|(?:--headless|--json).*(?:unexpected|unrecognized|unknown)/is.test(
-        stderr,
-      )
-    ) {
+    if (errorCode(error) === "SUBA_OUTPUT_LIMIT") return rollbackHandle(handle, sourceCwd, error)
+    if (unsupportedContract(stderr))
       throw new Error(
         `The workmux on PATH does not support 'workmux add --headless --json'. Upgrade workmux.\n${tail(stderr)}`,
       )
+    if (isAbort(error)) {
+      try {
+        await removeWorktreeHandle(handle, sourceCwd)
+      } catch (rollbackError) {
+        const missing =
+          rollbackError instanceof Error && /worktree .* not found/i.test(rollbackError.message)
+        if (!missing)
+          throw new AggregateError(
+            [error, rollbackError],
+            `Worktree provisioning was canceled and rollback failed for ${handle}`,
+          )
+      }
+      throw error
     }
-    if (error instanceof Error && !stderr) throw error
     throw new Error(`workmux could not provision ${handle}${stderr ? `:\n${tail(stderr)}` : ""}`)
   }
+
+  let receipt: WorkmuxWorktree
+  try {
+    receipt = parseHeadlessReceipt(output.stdout, output.stderr, sourceCwd, handle)
+    await validateStoredWorktree(receipt)
+  } catch (error) {
+    return rollbackHandle(handle, sourceCwd, error)
+  }
+  return receipt
 }
 
 export async function validateStoredWorktree(worktree: WorkmuxWorktree): Promise<void> {
   if (!isAbsolute(worktree.worktreePath) || !isAbsolute(worktree.workingDirectory))
     throw new Error(`Subagent worktree paths must be absolute: ${worktree.handle}`)
-  if (!isWithin(worktree.worktreePath, worktree.workingDirectory))
-    throw new Error(`Subagent working directory is outside its worktree: ${worktree.handle}`)
   for (const path of [worktree.worktreePath, worktree.workingDirectory]) {
     try {
       const metadata = await stat(path)
@@ -159,20 +275,16 @@ export async function validateStoredWorktree(worktree: WorkmuxWorktree): Promise
       )
     }
   }
+  const [canonicalRoot, canonicalWorkingDirectory] = await Promise.all([
+    realpath(worktree.worktreePath),
+    realpath(worktree.workingDirectory),
+  ])
+  if (!isWithin(canonicalRoot, canonicalWorkingDirectory))
+    throw new Error(`Subagent working directory is outside its worktree: ${worktree.handle}`)
 }
 
 export async function removeWorktree(worktree: WorkmuxWorktree): Promise<void> {
-  try {
-    await execFileAsync("workmux", ["remove", "--force", worktree.handle], {
-      cwd: worktree.sourceCwd,
-      maxBuffer: MAX_OUTPUT,
-    })
-  } catch (error) {
-    const stderr = errorText(error, "stderr")
-    throw new Error(
-      `workmux remove --force ${worktree.handle} failed${stderr ? `:\n${tail(stderr)}` : ""}`,
-    )
-  }
+  await removeWorktreeHandle(worktree.handle, worktree.sourceCwd)
 }
 
 export async function rollbackWorktree(

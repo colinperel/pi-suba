@@ -87,6 +87,25 @@ describe("workmux worktrees", () => {
     ])
   })
 
+  it("rolls back a successful command with an invalid receipt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-suba-workmux-invalid-"))
+    const bin = join(root, "bin")
+    const source = join(root, "repo")
+    const removalFile = join(root, "removed.txt")
+    await mkdir(bin)
+    await mkdir(source)
+    const executable = join(bin, "workmux")
+    await writeFile(
+      executable,
+      `#!${process.execPath}\nconst fs = require("node:fs");\nif (process.argv[2] === "add") process.stdout.write("not-json"); else fs.writeFileSync(${JSON.stringify(removalFile)}, process.argv.slice(2).join(" "));\n`,
+    )
+    await chmod(executable, 0o700)
+    process.env.PATH = bin
+
+    await expect(provisionWorktree("parser", "a1b2c3d4", source)).rejects.toThrow("invalid JSON")
+    expect(await readFile(removalFile, "utf8")).toBe("remove --force suba-parser-a1b2c3d4")
+  })
+
   it("reports a missing workmux executable", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-suba-workmux-missing-"))
     process.env.PATH = root

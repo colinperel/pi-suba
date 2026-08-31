@@ -13,7 +13,7 @@ import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
 import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
-import { createTarget, sendToPane, tmuxExec } from "../shared/tmux.ts"
+import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive } from "./registry.ts"
@@ -226,6 +226,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     },
     ctx: ExtensionContext,
     resume?: ChildRecord,
+    signal?: AbortSignal,
   ): Promise<ChildRecord> => {
     const parentPane = process.env.TMUX_PANE
     if (!parentPane)
@@ -262,7 +263,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     let worktree = resume?.worktree
     if (worktree) await validateStoredWorktree(worktree)
     else if (!resume && params.worktree)
-      worktree = await provisionWorktree(params.name, id, sourceCwd)
+      worktree = await provisionWorktree(params.name, id, sourceCwd, signal)
     const cwd = worktree?.workingDirectory ?? resume?.cwd ?? sourceCwd
     let rollbackArmed = Boolean(worktree && !resume)
 
@@ -350,8 +351,13 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           host.config.sharedWindowName,
         )
       } catch (error) {
+        if (error instanceof PartialTmuxTargetError) {
+          rollbackArmed = false
+          throw error
+        }
         throw new Error(
           `Could not create tmux target: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
         )
       }
       rollbackArmed = false
@@ -377,9 +383,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       try {
         host.persist(record)
       } catch (error) {
-        host.refreshWidget()
-        host.watch(id)
-        throw error
+        const message = error instanceof Error ? error.message : String(error)
+        process.stderr.write(
+          `pi-suba: child ${id} is running in ${target.paneId}, but its registry record could not be persisted: ${message}\n`,
+        )
       }
       host.refreshWidget()
       host.watch(id)
@@ -396,8 +403,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     description: launchToolDescription(host.profiles),
     promptSnippet: "Launch an asynchronous interactive Pi subagent with suba",
     parameters: launchParametersSchema(host.profiles),
-    async execute(_id, params, _signal, _update, ctx) {
-      const record = await start(params, ctx)
+    async execute(_id, params, signal, _update, ctx) {
+      const record = await start(params, ctx, undefined, signal)
       return {
         content: [
           {
@@ -518,11 +525,11 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       model: Type.Optional(ModelSchema),
       thinking: Type.Optional(ThinkingSchema),
     }),
-    async execute(_call, params, _signal, _update, ctx) {
+    async execute(_call, params, signal, _update, ctx) {
       const previous = host.records.get(params.id)
       if (!previous) throw new Error(`Unknown subagent: ${params.id}`)
       if (isLive(previous)) throw new Error(`Subagent ${params.id} is already live`)
-      const record = await start({ ...params, name: previous.name }, ctx, previous)
+      const record = await start({ ...params, name: previous.name }, ctx, previous, signal)
       return {
         content: [
           { type: "text", text: `Resumed ${record.name} (${record.id}) in ${record.paneId}.` },

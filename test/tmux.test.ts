@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import {
   createTarget,
   paneExists,
+  PartialTmuxTargetError,
   sendToPane,
   subaWindowName,
   type TmuxExec,
@@ -57,6 +58,28 @@ describe("tmux target transactions", () => {
       "configuration failed",
     )
     expect(calls).toContainEqual(["kill-pane", "-t", "%9"])
+  })
+
+  it("reports when a partial pane may still be live", async () => {
+    const run: TmuxExec = async (args) => {
+      if (args[0] === "display-message") return "@1"
+      if (args[0] === "list-panes") return ""
+      if (args[0] === "split-window") return "%9"
+      if (args[0] === "set-option") throw new Error("configuration failed")
+      if (args[0] === "kill-pane") throw new Error("cleanup failed")
+      throw new Error(`Unexpected tmux command: ${args.join(" ")}`)
+    }
+
+    const error = await createTarget(
+      { type: "split" },
+      "%1",
+      "sleep 60",
+      "child",
+      "suba",
+      run,
+    ).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(PartialTmuxTargetError)
+    expect((error as PartialTmuxTargetError).paneId).toBe("%9")
   })
 })
 
