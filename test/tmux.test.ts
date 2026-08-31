@@ -31,6 +31,35 @@ describe("tmux window names", () => {
   })
 })
 
+describe("tmux target transactions", () => {
+  it.each([
+    [{ type: "split" } as const, "split-window"],
+    [{ type: "window" } as const, "new-window"],
+    [{ type: "shared-window", windowName: "agents" } as const, "new-window"],
+  ])("removes a partial %s target", async (placement, createCommand) => {
+    const calls: string[][] = []
+    const run: TmuxExec = async (args) => {
+      calls.push(args)
+      const command = args[0]
+      if (command === "display-message") {
+        const format = args.at(-1)
+        if (format === "#{window_id}") return "@1"
+        if (format === "#{session_id}") return "$1"
+      }
+      if (command === "list-panes" || command === "list-windows") return ""
+      if (command === createCommand) return "%9"
+      if (command === "set-option") throw new Error("configuration failed")
+      if (command === "kill-pane") return ""
+      throw new Error(`Unexpected tmux command: ${args.join(" ")}`)
+    }
+
+    await expect(createTarget(placement, "%1", "sleep 60", "child", "suba", run)).rejects.toThrow(
+      "configuration failed",
+    )
+    expect(calls).toContainEqual(["kill-pane", "-t", "%9"])
+  })
+})
+
 describe.skipIf(!process.env.PATH)("tmux integration", () => {
   let parentPane = ""
   beforeAll(async () => {

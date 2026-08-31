@@ -42,6 +42,23 @@ describe("registry and widget", () => {
     expect(restored.get("a1")?.revision).toBe(3)
     expect(nextRevision(record(3), { state: "completed" }).revision).toBe(4)
   })
+  it("restores worktree launch metadata", () => {
+    const worktreeRecord = {
+      ...record(1),
+      worktree: {
+        handle: "suba-auth-a1",
+        branch: "suba-auth-a1",
+        sourceCwd: "/repo",
+        worktreePath: "/repo__worktrees/suba-auth-a1",
+        workingDirectory: "/repo__worktrees/suba-auth-a1/packages/app",
+      },
+    }
+    const restored = restoreRegistry([
+      { type: "custom", customType: "suba-child", data: worktreeRecord },
+    ])
+    expect(restored.get("a1")?.worktree).toEqual(worktreeRecord.worktree)
+  })
+
   it("finds stored artifacts under their resource directory", () => {
     const previous = {
       ...record(1),

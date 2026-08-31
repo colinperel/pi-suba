@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, sep } from "node:path"
 import { subaDirectory } from "../shared/paths.ts"
 import type { ChildActivity, Placement, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
+import type { WorkmuxWorktree } from "../shared/workmux.ts"
 
 export type RegistryState =
   | "launching"
@@ -33,6 +34,7 @@ export interface ChildRecord {
   placement: Placement
   name: string
   cwd: string
+  worktree?: WorkmuxWorktree
   profile: string
   resolvedLaunch: ResolvedLaunch
   lastEventSequence: number

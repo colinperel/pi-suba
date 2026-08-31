@@ -259,6 +259,23 @@ export async function applySharedWindowGrid(windowId: string, run = tmuxExec): P
   await run(["select-layout", "-t", windowId, `${layoutChecksum(body)},${body}`])
 }
 
+async function rollbackTargetPane(
+  paneId: string,
+  targetError: unknown,
+  run: TmuxExec,
+): Promise<never> {
+  const original = targetError instanceof Error ? targetError : new Error(String(targetError))
+  try {
+    await run(["kill-pane", "-t", paneId])
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [original, cleanupError],
+      `Could not configure or remove partial tmux target ${paneId}`,
+    )
+  }
+  throw original
+}
+
 export async function createTarget(
   placement: Placement,
   parentPane: string,
@@ -296,9 +313,13 @@ export async function createTarget(
         bottom?.paneId ?? parentPane,
         command,
       ])
-      await run(["set-option", "-p", "-t", paneId, "@suba-parent-pane", parentPane])
-      await equalizeSplitHeights(windowId, parentPane, run)
-      return { paneId, placement }
+      try {
+        await run(["set-option", "-p", "-t", paneId, "@suba-parent-pane", parentPane])
+        await equalizeSplitHeights(windowId, parentPane, run)
+        return { paneId, placement }
+      } catch (error) {
+        return rollbackTargetPane(paneId, error, run)
+      }
     })
   }
   if (placement.type === "window") {
@@ -316,46 +337,55 @@ export async function createTarget(
       sessionId,
       command,
     ])
-    await pinWindowName(paneId, windowName, run)
-    return { paneId, placement }
+    try {
+      await pinWindowName(paneId, windowName, run)
+      return { paneId, placement }
+    } catch (error) {
+      return rollbackTargetPane(paneId, error, run)
+    }
   }
   return withQueue("shared", async () => {
     const windowName = subaWindowName(placement.windowName ?? sharedDefault)
     const sessionId = await run(["display-message", "-p", "-t", parentPane, "#{session_id}"])
     let windowId = await findWindow(sessionId, windowName, run)
-    let paneId: string
-    if (!windowId) {
-      paneId = await run([
-        "new-window",
-        "-d",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "-n",
-        windowName,
-        "-t",
-        sessionId,
-        command,
-      ])
-      await pinWindowName(paneId, windowName, run)
-      windowId = await run(["display-message", "-p", "-t", paneId, "#{window_id}"])
-    } else {
-      const panes = await sharedWindowPanes(windowId, run)
-      const targetPane = panes.find((pane) => pane.role !== "sidebar")?.paneId
-      paneId = await run([
-        "split-window",
-        "-v",
-        "-d",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "-t",
-        targetPane ?? windowId,
-        command,
-      ])
-      await applySharedWindowGrid(windowId, run)
+    let paneId: string | undefined
+    try {
+      if (!windowId) {
+        paneId = await run([
+          "new-window",
+          "-d",
+          "-P",
+          "-F",
+          "#{pane_id}",
+          "-n",
+          windowName,
+          "-t",
+          sessionId,
+          command,
+        ])
+        await pinWindowName(paneId, windowName, run)
+        windowId = await run(["display-message", "-p", "-t", paneId, "#{window_id}"])
+      } else {
+        const panes = await sharedWindowPanes(windowId, run)
+        const targetPane = panes.find((pane) => pane.role !== "sidebar")?.paneId
+        paneId = await run([
+          "split-window",
+          "-v",
+          "-d",
+          "-P",
+          "-F",
+          "#{pane_id}",
+          "-t",
+          targetPane ?? windowId,
+          command,
+        ])
+        await applySharedWindowGrid(windowId, run)
+      }
+      return { paneId, placement, windowId }
+    } catch (error) {
+      if (paneId) return rollbackTargetPane(paneId, error, run)
+      throw error
     }
-    return { paneId, placement, windowId }
   })
 }
 

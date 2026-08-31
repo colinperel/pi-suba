@@ -4,13 +4,13 @@
 in tmux.
 
 Each subagent opens in a tmux pane or window, so you can watch it work, inspect its output, and type
-into its session. Launches return immediately. Results and help requests arrive asynchronously in
-the parent session.
+into its session. Launches return after target creation without waiting for the child result. Results
+and help requests arrive asynchronously in the parent session.
 
 ## Why pi-suba?
 
 - **Visible:** every child is a real Pi TUI, not a hidden background process.
-- **Non-blocking:** the parent can keep working while children run.
+- **Non-blocking:** the parent can keep working after each child target is created.
 - **Interactive:** the parent or user can send guidance to a live child.
 - **Asynchronous:** completion, failure, and help requests start a new parent turn automatically.
 - **Flexible:** choose models, thinking levels, tool access, context, prompts, extensions, and tmux
@@ -22,6 +22,7 @@ the parent session.
 - [Pi](https://pi.dev)
 - `tmux` on `PATH`
 - A parent Pi session running inside tmux
+- A compatible `workmux` on `PATH` for launches with `worktree: true`
 
 ## Install
 
@@ -80,8 +81,9 @@ add profiles when distinct kinds of children need different capabilities.
 4. A parent-side watcher updates the activity widget and delivers results.
 5. The child completes automatically when settled, unless automatic completion is disabled.
 
-The parent tool call returns as soon as tmux accepts the launch. Results are pushed to the parent,
-so the parent should never sleep or repeatedly poll for completion.
+The parent tool call returns as soon as tmux accepts the launch. Worktree provisioning, including
+configured hooks, completes before tmux target creation. Results are pushed to the parent, so the
+parent should never sleep or repeatedly poll for completion.
 
 ## Delegation and context
 
@@ -103,7 +105,7 @@ For work with shared context:
 
 | Tool          | Purpose                                               |
 | ------------- | ----------------------------------------------------- |
-| `suba`        | Launch a child and return immediately                 |
+| `suba`        | Launch a child and return after target creation       |
 | `suba_send`   | Send guidance to a live child by ID                   |
 | `suba_resume` | Continue a completed or exited child's session        |
 | `suba_list`   | Take a one-time snapshot of child status and activity |
@@ -118,11 +120,47 @@ The `suba` tool accepts:
 | `context`      | `fresh` or `fork`                                            |
 | `model`        | Fully qualified `provider/model` identifier                  |
 | `thinking`     | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
-| `cwd`          | Working directory, resolved relative to the parent directory |
+| `cwd`          | Source directory, resolved relative to the parent directory  |
+| `worktree`     | Provision a persistent workmux worktree for the child        |
 | `placement`    | `split`, `window`, or `shared-window`                        |
 | `autoComplete` | Per-launch automatic completion override                     |
 
 Explicit models must exist in Pi's model registry and belong to the active model scope.
+
+## Worktree launches
+
+Set `worktree: true` to isolate a child in a persistent git worktree:
+
+```json
+{
+  "name": "review parser",
+  "task": "Fix the parser and commit the result.",
+  "worktree": true
+}
+```
+
+`pi-suba` derives the branch and handle as
+`suba-<slugged-name>-<child-id>`, then runs:
+
+```sh
+workmux add <handle> --name <handle> --headless --json
+```
+
+Workmux applies its normal worktree path configuration, file operations, and
+`post_create` hooks. It does not create a workmux-managed session, window,
+pane, layout, or pane command. Pi-suba launches the child in the effective
+working directory returned by workmux.
+
+The worktree persists when the child finishes. Resume launches reuse the same
+worktree and working directory. Remove it explicitly to discard its branch:
+
+```sh
+workmux remove suba-review-parser-a1b2c3d4
+```
+
+If artifact preparation or tmux target creation fails, pi-suba runs
+`workmux remove --force <handle>`. A rollback failure reports the manual cleanup
+command while preserving both errors.
 
 ## Child tools
 

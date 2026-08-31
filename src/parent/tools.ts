@@ -14,6 +14,7 @@ import { TOOL_POLICIES } from "../shared/profiles.ts"
 import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
 import { createTarget, sendToPane, tmuxExec } from "../shared/tmux.ts"
+import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
@@ -61,7 +62,7 @@ export interface ManagerHost {
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux and return immediately. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -76,7 +77,18 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
     context: Type.Optional(ContextSchema),
     model: Type.Optional(ModelSchema),
     thinking: Type.Optional(ThinkingSchema),
-    cwd: Type.Optional(Type.String()),
+    cwd: Type.Optional(
+      Type.String({
+        description:
+          "Source directory for launch. With worktree enabled, workmux resolves the repository and configuration from this directory.",
+      }),
+    ),
+    worktree: Type.Optional(
+      Type.Boolean({
+        description:
+          "Provision a persistent worktree with workmux add --headless --json and launch the child inside it.",
+      }),
+    ),
     placement: Type.Optional(PlacementSchema),
     autoComplete: Type.Optional(Type.Boolean()),
   }
@@ -171,6 +183,8 @@ interface LaunchToolDetails {
   model?: string
   thinking?: ThinkingLevel
   placement?: string
+  worktreeHandle?: string
+  worktreePath?: string
   status: RegistryState
 }
 
@@ -206,6 +220,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       model?: string
       thinking?: ThinkingLevel
       cwd?: string
+      worktree?: boolean
       placement?: Placement
       autoComplete?: boolean
     },
@@ -243,116 +258,136 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       : resolveLaunch(host.config, profile!, params)
     if (resolvedLaunch.model) validateModel(resolvedLaunch.model, ctx)
     const id = resume?.id ?? uniqueId(host.records)
-    const cwd = resume?.cwd ?? resolve(ctx.cwd, params.cwd ?? ".")
-    const artifactRoot = artifactDirectory()
-    const artifactDir =
-      resume?.artifactDir ?? join(artifactRoot, ctx.sessionManager.getSessionId(), id)
-    const sessionFile = resume?.sessionFile ?? join(artifactDir, "session.jsonl")
-    await mkdir(join(artifactDir, "events"), { recursive: true })
-    let resultAfterEntry = 0
-    if (resume) {
-      resultAfterEntry = await countSessionEntries(sessionFile)
-      await rm(join(artifactDir, "process-exit"), { force: true })
-      await rm(join(artifactDir, "activity.json"), { force: true })
-    } else {
-      const parentSession = ctx.sessionManager.getSessionFile()
-      const entries =
-        params.context === "fork"
-          ? forkEntries(ctx.sessionManager.getBranch() as unknown as never[])
-          : []
-      await seedSession(sessionFile, cwd, parentSession, entries)
-      resultAfterEntry = await countSessionEntries(sessionFile)
-      await writeFile(join(artifactDir, "profile.md"), profile!.body, {
-        encoding: "utf8",
-        mode: 0o600,
-      })
-    }
-    const profileBody = await import("node:fs/promises").then((fs) =>
-      fs.readFile(join(artifactDir, "profile.md"), "utf8"),
-    )
-    const promptFile = join(artifactDir, "system-prompt.md")
-    const controlFile = join(artifactDir, "control-prompt.md")
-    await writeFile(promptFile, `${profileBody}\n`, { encoding: "utf8", mode: 0o600 })
-    await writeFile(controlFile, `${CONTROL_PROMPT}\n`, { encoding: "utf8", mode: 0o600 })
-    const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
-    const configuredExtensions = host.config.childExtensions.flatMap((source) => [
-      "-e",
-      resolveChildExtensionSource(source),
-    ])
-    const args = [
-      "--no-extensions",
-      ...configuredExtensions,
-      "-e",
-      childExtension,
-      "--tools",
-      [...TOOL_POLICIES[resolvedLaunch.tools], "suba_done", "suba_ping"].join(","),
-      "--session",
-      sessionFile,
-      "--name",
-      `suba: ${params.name}`,
-    ]
-    if (!resolvedLaunch.loadContext) args.push("--no-context-files")
-    if (!resolvedLaunch.loadSkills) args.push("--no-skills")
-    if (resolvedLaunch.model) args.push("--model", resolvedLaunch.model)
-    if (resolvedLaunch.thinking) args.push("--thinking", resolvedLaunch.thinking)
-    if (resolvedLaunch.systemPrompt === "replace")
-      args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
-    else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
-    args.push(params.task)
-    const scriptPath = join(artifactDir, "launch.sh")
-    await writeFile(
-      scriptPath,
-      launchScript(
-        args,
-        {
-          SUBA_CHILD_ID: id,
-          SUBA_ARTIFACT_DIR: artifactDir,
-          SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
-          SUBA_SESSION_FILE: sessionFile,
-        },
-        artifactDir,
-        cwd,
-      ),
-      { encoding: "utf8", mode: 0o700 },
-    )
-    await chmod(scriptPath, 0o700)
-    const placement = params.placement ?? resume?.placement ?? host.config.placement
-    let target
+    const sourceCwd = resolve(ctx.cwd, params.cwd ?? ".")
+    let worktree = resume?.worktree
+    if (worktree) await validateStoredWorktree(worktree)
+    else if (!resume && params.worktree)
+      worktree = await provisionWorktree(params.name, id, sourceCwd)
+    const cwd = worktree?.workingDirectory ?? resume?.cwd ?? sourceCwd
+    let rollbackArmed = Boolean(worktree && !resume)
+
     try {
-      target = await createTarget(
+      const artifactRoot = artifactDirectory()
+      const artifactDir =
+        resume?.artifactDir ?? join(artifactRoot, ctx.sessionManager.getSessionId(), id)
+      const sessionFile = resume?.sessionFile ?? join(artifactDir, "session.jsonl")
+      await mkdir(join(artifactDir, "events"), { recursive: true })
+      let resultAfterEntry = 0
+      if (resume) {
+        resultAfterEntry = await countSessionEntries(sessionFile)
+        await rm(join(artifactDir, "process-exit"), { force: true })
+        await rm(join(artifactDir, "activity.json"), { force: true })
+      } else {
+        const parentSession = ctx.sessionManager.getSessionFile()
+        const entries =
+          params.context === "fork"
+            ? forkEntries(ctx.sessionManager.getBranch() as unknown as never[])
+            : []
+        await seedSession(sessionFile, cwd, parentSession, entries)
+        resultAfterEntry = await countSessionEntries(sessionFile)
+        await writeFile(join(artifactDir, "profile.md"), profile!.body, {
+          encoding: "utf8",
+          mode: 0o600,
+        })
+      }
+      const profileBody = await import("node:fs/promises").then((fs) =>
+        fs.readFile(join(artifactDir, "profile.md"), "utf8"),
+      )
+      const promptFile = join(artifactDir, "system-prompt.md")
+      const controlFile = join(artifactDir, "control-prompt.md")
+      await writeFile(promptFile, `${profileBody}\n`, { encoding: "utf8", mode: 0o600 })
+      await writeFile(controlFile, `${CONTROL_PROMPT}\n`, { encoding: "utf8", mode: 0o600 })
+      const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
+      const configuredExtensions = host.config.childExtensions.flatMap((source) => [
+        "-e",
+        resolveChildExtensionSource(source),
+      ])
+      const args = [
+        "--no-extensions",
+        ...configuredExtensions,
+        "-e",
+        childExtension,
+        "--tools",
+        [...TOOL_POLICIES[resolvedLaunch.tools], "suba_done", "suba_ping"].join(","),
+        "--session",
+        sessionFile,
+        "--name",
+        `suba: ${params.name}`,
+      ]
+      if (!resolvedLaunch.loadContext) args.push("--no-context-files")
+      if (!resolvedLaunch.loadSkills) args.push("--no-skills")
+      if (resolvedLaunch.model) args.push("--model", resolvedLaunch.model)
+      if (resolvedLaunch.thinking) args.push("--thinking", resolvedLaunch.thinking)
+      if (resolvedLaunch.systemPrompt === "replace")
+        args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
+      else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
+      args.push(params.task)
+      const scriptPath = join(artifactDir, "launch.sh")
+      await writeFile(
+        scriptPath,
+        launchScript(
+          args,
+          {
+            SUBA_CHILD_ID: id,
+            SUBA_ARTIFACT_DIR: artifactDir,
+            SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
+            SUBA_SESSION_FILE: sessionFile,
+          },
+          artifactDir,
+          cwd,
+        ),
+        { encoding: "utf8", mode: 0o700 },
+      )
+      await chmod(scriptPath, 0o700)
+      const placement = params.placement ?? resume?.placement ?? host.config.placement
+      let target
+      try {
+        target = await createTarget(
+          placement,
+          parentPane,
+          shellQuote(scriptPath),
+          params.name,
+          host.config.sharedWindowName,
+        )
+      } catch (error) {
+        throw new Error(
+          `Could not create tmux target: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      rollbackArmed = false
+      const record: ChildRecord = {
+        id,
+        revision: (resume?.revision ?? 0) + 1,
+        state: "running",
+        sessionFile,
+        artifactDir,
+        paneId: target.paneId,
+        windowId: target.windowId,
         placement,
-        parentPane,
-        shellQuote(scriptPath),
-        params.name,
-        host.config.sharedWindowName,
-      )
+        name: params.name,
+        cwd,
+        worktree,
+        profile: resume?.profile ?? profile!.name,
+        resolvedLaunch,
+        lastEventSequence: resume?.lastEventSequence ?? 0,
+        startedAt: Date.now(),
+        resultAfterEntry,
+      }
+      host.records.set(id, record)
+      try {
+        host.persist(record)
+      } catch (error) {
+        host.refreshWidget()
+        host.watch(id)
+        throw error
+      }
+      host.refreshWidget()
+      host.watch(id)
+      return record
     } catch (error) {
-      throw new Error(
-        `Could not create tmux target: ${error instanceof Error ? error.message : String(error)}`,
-      )
+      if (rollbackArmed && worktree) return rollbackWorktree(worktree, error)
+      throw error
     }
-    const record: ChildRecord = {
-      id,
-      revision: (resume?.revision ?? 0) + 1,
-      state: "running",
-      sessionFile,
-      artifactDir,
-      paneId: target.paneId,
-      windowId: target.windowId,
-      placement,
-      name: params.name,
-      cwd,
-      profile: resume?.profile ?? profile!.name,
-      resolvedLaunch,
-      lastEventSequence: resume?.lastEventSequence ?? 0,
-      startedAt: Date.now(),
-      resultAfterEntry,
-    }
-    host.records.set(id, record)
-    host.persist(record)
-    host.refreshWidget()
-    host.watch(id)
-    return record
   }
 
   pi.registerTool({
@@ -379,6 +414,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
           placement: record.placement.type,
+          worktreeHandle: record.worktree?.handle,
+          worktreePath: record.worktree?.worktreePath,
           status: record.state,
         },
       }
@@ -393,8 +430,9 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         thinking,
         profile?.name ?? launchArgs.profile ?? host.config.defaultProfile,
       )
+      const labels = [meta, args.worktree ? "worktree" : undefined].filter(Boolean).join(" · ")
       const lines = [
-        `${theme.fg("accent", "▸")} ${theme.fg("toolTitle", theme.bold(launchArgs.name || "subagent"))}${meta ? theme.fg("dim", `  ${meta}`) : ""}`,
+        `${theme.fg("accent", "▸")} ${theme.fg("toolTitle", theme.bold(launchArgs.name || "subagent"))}${labels ? theme.fg("dim", `  ${labels}`) : ""}`,
       ]
       if (launchArgs.task) {
         const count = launchArgs.task.split(/\r?\n/).length
@@ -416,6 +454,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       if (expanded) {
         lines.push(theme.fg("dim", `  id ${details.id} · ${details.placement}`))
         lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
+        if (details.worktreeHandle)
+          lines.push(
+            theme.fg("dim", `  worktree ${details.worktreeHandle} · ${details.worktreePath}`),
+          )
       }
       return new Text(lines.filter(Boolean).join("\n"), 0, 0)
     },
@@ -493,6 +535,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
+          worktreeHandle: record.worktree?.handle,
+          worktreePath: record.worktree?.worktreePath,
           status: record.state,
         },
       }
@@ -516,7 +560,13 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         lines.push(
           theme.fg("dim", `  ${meta}${details.tmuxTarget ? ` · ${details.tmuxTarget}` : ""}`),
         )
-      if (expanded) lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
+      if (expanded) {
+        lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
+        if (details.worktreeHandle)
+          lines.push(
+            theme.fg("dim", `  worktree ${details.worktreeHandle} · ${details.worktreePath}`),
+          )
+      }
       return new Text(lines.join("\n"), 0, 0)
     },
   })
@@ -550,6 +600,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           elapsedMs: Date.now() - record.startedAt,
           lastResult: record.result,
           error: record.error,
+          worktree: record.worktree,
           resumable: !isLive(record),
         }))
       return {
