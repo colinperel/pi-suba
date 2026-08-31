@@ -106,6 +106,31 @@ describe("workmux worktrees", () => {
     expect(await readFile(removalFile, "utf8")).toBe("remove --force suba-parser-a1b2c3d4")
   })
 
+  it("waits for canceled provisioning to exit before rollback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-suba-workmux-abort-"))
+    const bin = join(root, "bin")
+    const source = join(root, "repo")
+    const removalFile = join(root, "removed.txt")
+    await mkdir(bin)
+    await mkdir(source)
+    const executable = join(bin, "workmux")
+    await writeFile(
+      executable,
+      `#!${process.execPath}\nconst fs = require("node:fs");\nif (process.argv[2] === "add") setTimeout(() => {}, 10000); else fs.writeFileSync(${JSON.stringify(removalFile)}, "removed");\n`,
+    )
+    await chmod(executable, 0o700)
+    process.env.PATH = bin
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 100)
+
+    const error = await provisionWorktree("parser", "a1b2c3d4", source, controller.signal).catch(
+      (caught: unknown) => caught,
+    )
+
+    expect((error as Error).name).toBe("AbortError")
+    expect(await readFile(removalFile, "utf8")).toBe("removed")
+  })
+
   it("reports a missing workmux executable", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-suba-workmux-missing-"))
     process.env.PATH = root

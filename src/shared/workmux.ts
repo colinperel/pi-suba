@@ -45,6 +45,7 @@ function runWorkmux(
     let stdout = ""
     let stderr = ""
     let outputError: Error | undefined
+    let abortError: Error | undefined
     let settled = false
     child.stdout.on("data", (chunk: Buffer) => {
       if (outputError) return
@@ -63,6 +64,10 @@ function runWorkmux(
     })
     child.on("error", (error) => {
       if (settled) return
+      if (error.name === "AbortError") {
+        abortError = error
+        return
+      }
       settled = true
       Object.assign(error, { stdout, stderr })
       reject(error)
@@ -73,6 +78,9 @@ function runWorkmux(
       if (outputError) {
         Object.assign(outputError, { stdout, stderr })
         reject(outputError)
+      } else if (abortError) {
+        Object.assign(abortError, { stdout, stderr })
+        reject(abortError)
       } else if (code === 0) {
         resolve({ stdout, stderr })
       } else {
