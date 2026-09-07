@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
+import { agentDirectory, subaDirectory } from "./paths.ts"
 import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "./protocol.ts"
 
 export interface SubaConfig {
@@ -78,10 +79,7 @@ function stringArray(value: unknown, label: string): string[] {
   return result
 }
 
-export function resolveChildExtensionSource(
-  source: string,
-  agentDir = join(homedir(), ".pi", "agent"),
-): string {
+export function resolveChildExtensionSource(source: string, agentDir = agentDirectory()): string {
   if (source === "~") return homedir()
   if (source.startsWith("~/")) return resolve(homedir(), source.slice(2))
   if (isAbsolute(source)) return source
@@ -135,9 +133,7 @@ export function parseConfig(value: unknown): SubaConfig {
   }
 }
 
-export async function loadConfig(
-  path = join(homedir(), ".pi", "suba", "config.json"),
-): Promise<SubaConfig> {
+export async function loadConfig(path = join(subaDirectory(), "config.json")): Promise<SubaConfig> {
   try {
     return parseConfig(JSON.parse(await readFile(path, "utf8")))
   } catch (error) {

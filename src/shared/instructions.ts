@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { subaDirectory } from "./paths.ts"
 
 export async function loadInstructions(
-  path = join(homedir(), ".pi", "suba", "instructions.md"),
+  path = join(subaDirectory(), "instructions.md"),
 ): Promise<string> {
   try {
     return (await readFile(path, "utf8")).trim()

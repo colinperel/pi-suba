@@ -76,7 +76,7 @@ add profiles when distinct kinds of children need different capabilities.
 
 1. The parent calls `suba` with a name and a focused task.
 2. `pi-suba` creates a child session and launches Pi in tmux.
-3. The child reports activity and lifecycle events through files under `~/.pi/suba/artifacts/`.
+3. The child reports activity and lifecycle events through files under `~/.pi/agent/suba/artifacts/`.
 4. A parent-side watcher updates the activity widget and delivers results.
 5. The child completes automatically when settled, unless automatic completion is disabled.
 
@@ -138,10 +138,16 @@ and can answer with `suba_send`. You can also focus the child's tmux pane and ty
 
 ## Configuration
 
-Subagent resources live under `~/.pi/suba/`:
+Subagent resources live under `<agent-dir>/suba/`, where `<agent-dir>` is Pi's
+`PI_CODING_AGENT_DIR` (default `~/.pi/agent`). For example,
+`PI_CODING_AGENT_DIR=~/.pi-work/agent` uses `~/.pi-work/agent/suba/`.
+Each agent directory has independent configuration, instructions, profiles, and artifacts.
+Child processes receive the parent's resolved agent directory explicitly.
+
+Default layout:
 
 ```text
-~/.pi/suba/
+~/.pi/agent/suba/
 ├── config.json
 ├── instructions.md
 ├── profiles/
@@ -190,14 +196,14 @@ Model, thinking, and automatic completion settings resolve in this order:
 
 Children start with automatic extension discovery disabled. `childExtensions` lists the packages or
 files loaded explicitly in every child. It accepts npm package sources, absolute paths, `~/` paths,
-and relative paths. Relative paths resolve from `~/.pi/agent`, matching relative package sources in
-Pi settings.
+and relative paths. Relative paths resolve from the active Pi agent directory, matching relative
+package sources in Pi settings.
 
 Configuration and profiles are read when the parent session starts.
 
 ### `instructions.md`
 
-`~/.pi/suba/instructions.md` is appended to the parent system prompt. It is user policy rather than
+`~/.pi/agent/suba/instructions.md` is appended to the parent system prompt. It is user policy rather than
 required extension configuration. Use it to describe when delegation is appropriate, which context
 style to prefer, and how the parent should select profiles or models.
 
@@ -224,7 +230,7 @@ parent to route different kinds of work differently.
 
 ## Profiles
 
-Profiles are Markdown files under `~/.pi/suba/profiles/`. Frontmatter controls how the child
+Profiles are Markdown files under `~/.pi/agent/suba/profiles/`. Frontmatter controls how the child
 launches, and the Markdown body becomes part of its system prompt.
 
 ```markdown
@@ -316,7 +322,7 @@ Each child stores its session, prompt files, activity, lifecycle events, launch 
 status under:
 
 ```text
-~/.pi/suba/artifacts/<parent-session-id>/<child-id>/
+~/.pi/agent/suba/artifacts/<parent-session-id>/<child-id>/
 ```
 
 The parent registry is persisted in the parent Pi session, so reopening that session restores known

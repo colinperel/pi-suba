@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto"
 import { accessSync, constants, existsSync } from "node:fs"
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { agentDirectory, artifactDirectory } from "../shared/paths.ts"
 import { StringEnum } from "@earendil-works/pi-ai"
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
@@ -154,7 +154,7 @@ export function launchScript(
   artifactDir: string,
   cwd: string,
 ): string {
-  const exports = Object.entries(env)
+  const exports = Object.entries({ ...env, PI_CODING_AGENT_DIR: agentDirectory() })
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join("\n")
   return `#!/bin/sh\n${exports}\nif cd ${shellQuote(cwd)}; then\n  ${invocation()} ${args.map(shellQuote).join(" ")}\n  exit_code=$?\nelse\n  exit_code=$?\nfi\nprintf '%s\\n' "$exit_code" > ${shellQuote(join(artifactDir, "process-exit.tmp"))}\nmv ${shellQuote(join(artifactDir, "process-exit.tmp"))} ${shellQuote(join(artifactDir, "process-exit"))}\nexit "$exit_code"\n`
@@ -244,9 +244,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     if (resolvedLaunch.model) validateModel(resolvedLaunch.model, ctx)
     const id = resume?.id ?? uniqueId(host.records)
     const cwd = resume?.cwd ?? resolve(ctx.cwd, params.cwd ?? ".")
-    const artifactRoot = process.env.SUBA_ARTIFACT_ROOT?.trim()
-      ? resolve(process.env.SUBA_ARTIFACT_ROOT)
-      : join(homedir(), ".pi", "suba", "artifacts")
+    const artifactRoot = artifactDirectory()
     const artifactDir =
       resume?.artifactDir ?? join(artifactRoot, ctx.sessionManager.getSessionId(), id)
     const sessionFile = resume?.sessionFile ?? join(artifactDir, "session.jsonl")

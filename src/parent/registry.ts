@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
-import { homedir } from "node:os"
 import { isAbsolute, join, relative, sep } from "node:path"
+import { subaDirectory } from "../shared/paths.ts"
 import type { ChildActivity, Placement, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
 
@@ -46,7 +46,7 @@ export interface ChildRecord {
 
 export function resolveStoredArtifactPaths(
   record: ChildRecord,
-  root = join(homedir(), ".pi", "suba"),
+  root = subaDirectory(),
   exists: (path: string) => boolean = existsSync,
 ): ChildRecord {
   if (exists(record.artifactDir)) return record

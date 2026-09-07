@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { basename, join } from "node:path"
+import { subaDirectory } from "./paths.ts"
 import YAML from "yaml"
 import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
 
@@ -105,7 +105,7 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
 }
 
 export async function loadProfiles(
-  dir = join(homedir(), ".pi", "suba", "profiles"),
+  dir = join(subaDirectory(), "profiles"),
 ): Promise<Map<string, Profile>> {
   const profiles = new Map<string, Profile>([["default", BUILTIN_DEFAULT_PROFILE]])
   let names: string[]
