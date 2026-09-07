@@ -3,6 +3,13 @@ title: Changelog
 description: Release notes for pi-suba.
 ---
 
+## v0.2.0 (2026-09-07)
+
+- Separate Pi environments keep independent Suba settings, profiles, instructions, and artifacts;
+  subagents use the parent's Pi environment.
+- Profile selection offers only available profiles and is hidden when only the default profile
+  exists.
+
 ## v0.1.2 (2026-08-30)
 
 - Subagents survive interrupted turns and continue after compaction instead of reporting a failure.
