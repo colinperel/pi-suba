@@ -119,7 +119,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("model_select", (event) => activity.selected(event.model.provider, event.model.id))
   pi.on("thinking_level_select", (event) => activity.thinking(event.level as ThinkingLevel))
   pi.on("agent_settled", async (_event, ctx) => {
-    if (automatic && lifecycle === "running" && !latestAssistantWasAborted(ctx)) await finish(ctx)
+    if (lifecycle !== "running") return
+    if (automatic && !latestAssistantWasAborted(ctx)) await finish(ctx)
+    else await activity.waiting()
   })
   pi.on("session_shutdown", async () => {
     if (lifecycle !== "terminated" && lifecycle !== "awaiting-parent") await activity.done()

@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import childExtension from "../src/child/index.ts"
-import { readEvents } from "../src/shared/protocol.ts"
+import { readActivity, readEvents } from "../src/shared/protocol.ts"
 
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void
 type RegisteredTool = {
@@ -35,6 +35,53 @@ afterEach(async () => {
 })
 
 describe("child completion", () => {
+  it("marks manual agents waiting after settling and resumes activity on the next run", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "manual"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = "0"
+
+    const handlers = new Map<string, Handler>()
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+
+    let shutdowns = 0
+    const ctx = {
+      sessionManager: { getBranch: () => [] },
+      shutdown: () => {
+        shutdowns += 1
+      },
+    } as unknown as ExtensionContext
+    const snapshot = () => readActivity(join(artifactDir, "activity.json"), "manual")
+
+    await handlers.get("message_update")?.({}, ctx)
+    expect((await snapshot()).activity).toBe("streaming")
+    await handlers.get("agent_settled")?.({}, ctx)
+    expect(await snapshot()).toMatchObject({ state: "waiting" })
+    expect((await snapshot()).activity).toBeUndefined()
+    expect((await snapshot()).toolName).toBeUndefined()
+    expect(shutdowns).toBe(0)
+    expect(await readEvents(artifactDir, 0)).toEqual([])
+
+    await handlers.get("agent_start")?.({}, ctx)
+    expect(await snapshot()).toMatchObject({ state: "working", activity: "model" })
+    await tools
+      .get("suba_done")
+      ?.execute("call", {}, new AbortController().signal, () => undefined, ctx)
+    await handlers.get("agent_settled")?.({}, ctx)
+    expect((await snapshot()).state).toBe("done")
+    expect(shutdowns).toBe(1)
+    expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual(["completed"])
+  })
+
   it("allows completion to retry after an artifact write fails", async () => {
     const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
     temporaryDirectories.push(artifactDir)
