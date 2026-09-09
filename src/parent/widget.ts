@@ -80,7 +80,7 @@ export function projectWidgetRows(records: ChildRecord[], now: number, maxRows: 
   for (const item of projection.items) {
     const glyph = item.state === "waiting" ? "?" : "●"
     rows.push(
-      `${glyph} ${item.name}${item.worktree ? " [wt]" : ""} · ${item.activity} · ${item.model} · ${item.thinking} · ${item.elapsed}`,
+      `${glyph} ${item.name}${item.worktree ? " " : ""} · ${item.activity} · ${item.model} · ${item.thinking} · ${item.elapsed}`,
     )
   }
   if (projection.overflow) rows.push(`+${projection.overflow} more`)
@@ -132,7 +132,7 @@ export class ActivityWidget implements Component {
       const glyph =
         item.state === "waiting" ? this.theme.fg("warning", "?") : this.theme.fg("accent", "●")
       const activityTone = item.state === "waiting" ? "warning" : "dim"
-      const badge = item.worktree ? ` ${this.theme.fg("dim", "[wt]")}` : ""
+      const badge = item.worktree ? ` ${this.theme.fg("dim", "")}` : ""
       const left = ` ${glyph} ${this.theme.bold(item.name)}${badge} ${this.theme.fg(activityTone, `· ${item.activity}`)}`
       const detailParts =
         innerWidth >= 52 ? [item.model, item.thinking, item.elapsed] : [item.elapsed]
