@@ -40,6 +40,20 @@ describe("child launch validation", () => {
     expect(launchParametersSchema(profiles).properties).not.toHaveProperty("profile")
     expect(launchToolDescription(profiles)).not.toContain("Available profiles")
   })
+  it("guides parallel worktree launches through serialized merge approval", () => {
+    const profiles = new Map([["default", BUILTIN_DEFAULT_PROFILE]])
+    const description = launchToolDescription(profiles)
+    expect(description).toContain("Use worktree: true")
+    expect(description).toContain("omit it for read-only tasks")
+    expect(description).toContain("skills enabled and the merge skill available")
+    expect(description).toContain("autoComplete: false")
+    expect(description).toContain("suba_ping rather than finish with suba_done")
+    expect(description).toContain("one at a time by sending /skill:merge via suba_send")
+    expect(description).toContain("verify integration")
+    expect(launchParametersSchema(profiles).properties.worktree).toMatchObject({
+      description: expect.stringContaining("/skill:merge"),
+    })
+  })
   it("enumerates profile selection when multiple profiles exist", () => {
     const reviewer: Profile = { ...BUILTIN_DEFAULT_PROFILE, name: "reviewer" }
     const profiles = new Map([

@@ -129,13 +129,17 @@ Explicit models must exist in Pi's model registry and belong to the active model
 
 ## Worktree launches
 
-Set `worktree: true` to isolate a child in a persistent git worktree:
+Use `worktree: true` for children modifying code in parallel with the parent or
+other children. Omit it for read-only tasks. To keep a child available for merge
+approval, set `autoComplete: false` and ask it to request approval with `suba_ping`
+instead of finishing with `suba_done`:
 
 ```json
 {
   "name": "review parser",
-  "task": "Fix the parser and commit the result.",
-  "worktree": true
+  "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ping, then wait. Do not call suba_done before integration. If merge conflicts are unclear, request guidance with suba_ping.",
+  "worktree": true,
+  "autoComplete": false
 }
 ```
 
@@ -153,8 +157,23 @@ does not create a workmux-managed session, window, pane, layout, or pane command
 Pi-suba launches the child in the effective working directory returned by
 workmux.
 
-The worktree persists when the child finishes. Resume launches reuse the same
-worktree and working directory. Remove it explicitly to discard its branch:
+The parent authorizes merges one at a time. Ensure the child profile has
+`load-skills: true` and the `merge` skill is installed in its Pi environment. When
+ready to integrate, send the skill command as the entire message:
+
+```json
+{ "id": "<child-id>", "message": "/skill:merge" }
+```
+
+Use `suba_send` for this message. The merge skill commits, rebases onto the local
+base branch, resolves conflicts while preserving both branches' changes, and
+merges with cleanup. Verify integration before authorizing the next merge. Cleanup
+can terminate the child, so do not require a final child report or expect it to
+remain resumable afterward.
+
+Without merge cleanup, the worktree persists when the child finishes. Resume
+launches reuse the same worktree and working directory. Remove it explicitly to
+discard its branch:
 
 ```sh
 workmux remove suba-review-parser-a1b2c3d4

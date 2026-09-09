@@ -62,7 +62,7 @@ export interface ManagerHost {
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send. Instruct children to request guidance with suba_ping if conflicts are unclear. The merge skill handles rebasing, conflict resolution, integration, and cleanup; verify integration rather than requiring a final child report after cleanup. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -86,7 +86,7 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
     worktree: Type.Optional(
       Type.Boolean({
         description:
-          "Provision a persistent worktree with workmux add --headless --json and launch the child inside it.",
+          "Provision a persistent worktree with workmux add --headless --json and launch the child inside it. Use for parallel code changes; the parent authorizes integration by sending /skill:merge.",
       }),
     ),
     placement: Type.Optional(PlacementSchema),
@@ -472,7 +472,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
   pi.registerTool({
     name: "suba_send",
     label: "Suba Send",
-    description: "Send guidance to a live subagent by stable child ID.",
+    description:
+      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge as the entire message. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_call, params) {
       const record = host.records.get(params.id)
