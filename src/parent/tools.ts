@@ -92,6 +92,8 @@ export async function finishChild(
     state: "completed",
     result: result.trim(),
     error: undefined,
+    activity: undefined,
+    activityError: undefined,
   }
   // Terminal records prevent in-flight watcher reads from overwriting completion.
   host.records.set(id, completed)

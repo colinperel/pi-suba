@@ -50,6 +50,17 @@ function fixture() {
 describe("parent completion", () => {
   it("records the verified result and closes only the child's pane", async () => {
     const host = fixture()
+    Object.assign(host.records.get("child")!, {
+      activity: {
+        version: 1,
+        childId: "child",
+        sequence: 1,
+        updatedAt: 1,
+        state: "working",
+        activity: "model",
+      },
+      activityError: "stale activity read error",
+    })
     vi.mocked(tmuxExec).mockImplementation(async () => {
       expect(host.records.get("child")?.state).toBe("completed")
       return ""
@@ -62,6 +73,8 @@ describe("parent completion", () => {
       result: "Verified both changes on main",
       sessionFile: "/artifacts/session.jsonl",
     })
+    expect(completed.activity).toBeUndefined()
+    expect(completed.activityError).toBeUndefined()
     expect(host.persist).toHaveBeenCalledWith(completed)
     expect(host.refreshWidget).toHaveBeenCalledOnce()
   })
