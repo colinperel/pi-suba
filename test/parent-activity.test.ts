@@ -14,7 +14,8 @@ import { atomicWriteJson, type ChildActivity, writeEvent } from "../src/shared/p
 import { seedSession } from "../src/shared/sessions.ts"
 import { createTarget, paneExists, sendToPane } from "../src/shared/tmux.ts"
 
-vi.mock("../src/shared/tmux.ts", () => ({
+vi.mock("../src/shared/tmux.ts", async (original) => ({
+  ...(await original<typeof import("../src/shared/tmux.ts")>()),
   createTarget: vi.fn(async () => ({ paneId: "%child", placement: { type: "split" } })),
   paneExists: vi.fn(async () => true),
   sendToPane: vi.fn(async () => undefined),
