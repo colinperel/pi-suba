@@ -92,6 +92,38 @@ describe("registry and widget", () => {
     expect(rows.at(-1)).toBe("+1 more")
   })
 
+  it("marks only worktree children in plain and bordered rows", () => {
+    const isolated: ChildRecord = {
+      ...record(1),
+      worktree: {
+        handle: "suba-auth-a1",
+        branch: "suba-auth-a1",
+        sourceCwd: "/repo",
+        worktreePath: "/repo__worktrees/suba-auth-a1",
+        workingDirectory: "/repo__worktrees/suba-auth-a1",
+      },
+    }
+    const shared = { ...record(1), id: "b2", name: "review" }
+    const projection = projectWidget([isolated, shared], 20_000, 3)
+    expect(projection.items.map((item) => item.worktree)).toEqual([true, false])
+    const rows = projectWidgetRows([isolated, shared], 20_000, 3)
+    expect(rows[1]).toContain("● [wt] auth-tests")
+    expect(rows[2]).not.toContain("[wt]")
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as never
+    const widget = new ActivityWidget(() => projection, theme)
+    for (const width of [24, 48, 80]) {
+      const lines = widget.render(width)
+      expect(lines[1]).toContain("● [wt]")
+      expect(lines[2]).not.toContain("[wt]")
+    }
+    for (let width = 1; width <= 100; width++) {
+      expect(widget.render(width).every((line) => visibleWidth(line) <= width)).toBe(true)
+    }
+  })
+
   it("renders a bordered width-safe activity view", () => {
     const first = record(1)
     first.startedAt = 10_000
