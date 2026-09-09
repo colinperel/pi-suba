@@ -16,7 +16,7 @@ import { countSessionEntries, forkEntries, seedSession } from "../shared/session
 import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
-import { isLive } from "./registry.ts"
+import { isLive, isResumable } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
 
 const PlacementSchema = Type.Union(
@@ -51,6 +51,11 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_ping only when parent guidance is required. Use suba_done to finish immediately. Automatic completion ends a settled run when enabled.`
 
+export function childControlPrompt(worktree: boolean): string {
+  if (!worktree) return CONTROL_PROMPT
+  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ping and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill. If conflicts or merge failures are unclear, request guidance with suba_ping. After a successful merge, if you are still running, briefly report the integration result and call suba_done, even when automatic completion is disabled. Workmux cleans up the worktree; suba_done records completion and shuts down this separately managed Pi session. Do not call suba_done while awaiting approval or while integration remains unresolved.`
+}
+
 export interface ManagerHost {
   config: SubaConfig
   profiles: Map<string, Profile>
@@ -62,7 +67,7 @@ export interface ManagerHost {
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send. Instruct children to request guidance with suba_ping if conflicts are unclear. The merge skill handles rebasing, conflict resolution, integration, and cleanup; verify integration rather than requiring a final child report after cleanup. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send. Instruct children to request guidance with suba_ping if conflicts are unclear. The merge skill handles rebasing, conflict resolution, integration, and worktree cleanup. Children must report the result and call suba_done after a successful merge if still running, even with autoComplete: false. Verify integration before approving the next merge; do not assume workmux closes the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -297,7 +302,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       const promptFile = join(artifactDir, "system-prompt.md")
       const controlFile = join(artifactDir, "control-prompt.md")
       await writeFile(promptFile, `${profileBody}\n`, { encoding: "utf8", mode: 0o600 })
-      await writeFile(controlFile, `${CONTROL_PROMPT}\n`, { encoding: "utf8", mode: 0o600 })
+      await writeFile(controlFile, `${childControlPrompt(Boolean(worktree))}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      })
       const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
       const configuredExtensions = host.config.childExtensions.flatMap((source) => [
         "-e",
@@ -609,7 +617,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           lastResult: record.result,
           error: record.error,
           worktree: record.worktree,
-          resumable: !isLive(record),
+          resumable: isResumable(record),
         }))
       return {
         content: [{ type: "text", text: JSON.stringify(records, null, 2) }],

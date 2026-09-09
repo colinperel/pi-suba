@@ -97,6 +97,17 @@ export function nextRevision(record: ChildRecord, patch: Partial<ChildRecord>): 
   return { ...record, ...patch, revision: record.revision + 1 }
 }
 
+export function isResumable(
+  record: ChildRecord,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  return (
+    !isLive(record) &&
+    (!record.worktree ||
+      (exists(record.worktree.worktreePath) && exists(record.worktree.workingDirectory)))
+  )
+}
+
 export function isLive(record: ChildRecord): boolean {
   return (
     record.state === "launching" || record.state === "running" || record.state === "awaiting-parent"

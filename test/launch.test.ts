@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  childControlPrompt,
   invocation,
   launchParametersSchema,
   launchScript,
@@ -26,6 +27,15 @@ describe("child launch validation", () => {
   it("uses the deterministic executable override", () => {
     process.env.SUBA_PI_EXECUTABLE = "./test/fixtures/fake-pi"
     expect(invocation()).toBe(`'${process.cwd()}/test/fixtures/fake-pi'`)
+  })
+  it("requires worktree children to finish after successful integration", () => {
+    const prompt = childControlPrompt(true)
+    expect(prompt).toContain("request merge approval with suba_ping and wait")
+    expect(prompt).toContain("When the parent sends /skill:merge")
+    expect(prompt).toContain("After a successful merge, if you are still running")
+    expect(prompt).toContain("call suba_done, even when automatic completion is disabled")
+    expect(prompt).toContain("while integration remains unresolved")
+    expect(childControlPrompt(false)).not.toContain("/skill:merge")
   })
   it("requires fully qualified model identifiers", () => {
     expect(parseQualifiedModel("openai-codex/gpt-5.6-sol")).toEqual({
@@ -49,7 +59,8 @@ describe("child launch validation", () => {
     expect(description).toContain("autoComplete: false")
     expect(description).toContain("suba_ping rather than finish with suba_done")
     expect(description).toContain("one at a time by sending /skill:merge via suba_send")
-    expect(description).toContain("verify integration")
+    expect(description).toContain("Verify integration")
+    expect(description).toContain("call suba_done after a successful merge")
     expect(launchParametersSchema(profiles).properties.worktree).toMatchObject({
       description: expect.stringContaining("/skill:merge"),
     })

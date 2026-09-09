@@ -167,9 +167,13 @@ ready to integrate, send the skill command as the entire message:
 
 Use `suba_send` for this message. The merge skill commits, rebases onto the local
 base branch, resolves conflicts while preserving both branches' changes, and
-merges with cleanup. Verify integration before authorizing the next merge. Cleanup
-can terminate the child, so do not require a final child report or expect it to
-remain resumable afterward.
+merges with worktree cleanup. Workmux does not own the separately created pi-suba
+pane, so worktree children are instructed to briefly report the result and call
+`suba_done` after a successful merge if still running, even with automatic
+completion disabled. This records completion and shuts down the child session.
+Unresolved conflicts or merge failures require guidance, not completion. Verify
+integration before authorizing the next merge. Removed worktrees are reported as
+non-resumable; their saved transcripts and results remain available.
 
 Without merge cleanup, the worktree persists when the child finishes. Resume
 launches reuse the same worktree and working directory. Remove it explicitly to

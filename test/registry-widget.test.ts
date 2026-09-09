@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import {
+  isResumable,
   nextRevision,
   resolveStoredArtifactPaths,
   restoreRegistry,
@@ -57,6 +58,12 @@ describe("registry and widget", () => {
       { type: "custom", customType: "suba-child", data: worktreeRecord },
     ])
     expect(restored.get("a1")?.worktree).toEqual(worktreeRecord.worktree)
+    const completed: ChildRecord = { ...worktreeRecord, state: "completed" }
+    expect(isResumable(worktreeRecord, () => true)).toBe(false)
+    expect(isResumable(completed, () => true)).toBe(true)
+    expect(isResumable(completed, () => false)).toBe(false)
+    expect(isResumable(completed, (path) => path === completed.worktree?.worktreePath)).toBe(false)
+    expect(isResumable({ ...record(1), state: "completed" }, () => false)).toBe(true)
   })
 
   it("finds stored artifacts under their resource directory", () => {
