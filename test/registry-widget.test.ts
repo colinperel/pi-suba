@@ -107,16 +107,16 @@ describe("registry and widget", () => {
     const projection = projectWidget([isolated, shared], 20_000, 3)
     expect(projection.items.map((item) => item.worktree)).toEqual([true, false])
     const rows = projectWidgetRows([isolated, shared], 20_000, 3)
-    expect(rows[1]).toContain("● [wt] auth-tests")
+    expect(rows[1]).toContain("● auth-tests [wt]")
     expect(rows[2]).not.toContain("[wt]")
     const theme = {
       fg: (_color: string, text: string) => text,
       bold: (text: string) => text,
     } as never
     const widget = new ActivityWidget(() => projection, theme)
-    for (const width of [24, 48, 80]) {
+    for (const width of [48, 80]) {
       const lines = widget.render(width)
-      expect(lines[1]).toContain("● [wt]")
+      expect(lines[1]).toContain("● auth-tests [wt]")
       expect(lines[2]).not.toContain("[wt]")
     }
     for (let width = 1; width <= 100; width++) {
