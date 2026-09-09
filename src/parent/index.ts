@@ -75,6 +75,7 @@ export default async function (pi: ExtensionAPI) {
     list: () => [...records.values()],
     get: (id: string) => records.get(id),
     update: (record: ChildRecord, notify?: { type: "result" | "ping"; content: string }) => {
+      if (!isLive(records.get(record.id) ?? record)) return
       records.set(record.id, record)
       host.persist(record)
       refreshWidget()
@@ -103,6 +104,7 @@ export default async function (pi: ExtensionAPI) {
         )
     },
     activity: (record: ChildRecord) => {
+      if (!isLive(records.get(record.id) ?? record)) return
       records.set(record.id, record)
       publishActivity()
       refreshWidget()

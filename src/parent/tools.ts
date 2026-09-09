@@ -13,7 +13,13 @@ import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
 import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
-import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
+import {
+  applySharedWindowGrid,
+  createTarget,
+  PartialTmuxTargetError,
+  sendToPane,
+  tmuxExec,
+} from "../shared/tmux.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive, isResumable } from "./registry.ts"
@@ -53,7 +59,7 @@ const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned t
 
 export function childControlPrompt(worktree: boolean): string {
   if (!worktree) return CONTROL_PROMPT
-  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ping and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill. If conflicts or merge failures are unclear, request guidance with suba_ping. After a successful merge, if you are still running, briefly report the integration result and call suba_done, even when automatic completion is disabled. Workmux cleans up the worktree; suba_done records completion and shuts down this separately managed Pi session. Do not call suba_done while awaiting approval or while integration remains unresolved.`
+  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ping and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and close this separately managed pane. Workmux handles worktree cleanup, not this pane.`
 }
 
 export interface ManagerHost {
@@ -65,9 +71,49 @@ export interface ManagerHost {
   watch(id: string): void
 }
 
+export async function finishChild(
+  host: ManagerHost,
+  id: string,
+  result: string,
+): Promise<ChildRecord> {
+  const previous = host.records.get(id)
+  if (!previous) throw new Error(`Unknown subagent: ${id}`)
+  if (!result.trim()) throw new Error("A verified completion summary is required")
+  if (previous.state === "completed") {
+    host.persist(previous)
+    return previous
+  }
+  if (previous.state !== "awaiting-parent")
+    throw new Error(`Subagent ${id} must be awaiting parent guidance before finishing`)
+  if (!previous.paneId) throw new Error(`Subagent ${id} has no pane to close`)
+  const completed: ChildRecord = {
+    ...previous,
+    revision: previous.revision + 1,
+    state: "completed",
+    result: result.trim(),
+    error: undefined,
+  }
+  // Terminal records prevent in-flight watcher reads from overwriting completion.
+  host.records.set(id, completed)
+  try {
+    await tmuxExec(["kill-pane", "-t", previous.paneId])
+  } catch (error) {
+    host.records.set(id, previous)
+    throw error
+  }
+  try {
+    host.persist(completed)
+  } finally {
+    host.refreshWidget()
+  }
+  if (previous.windowId && previous.placement.type === "shared-window")
+    await applySharedWindowGrid(previous.windowId).catch(() => undefined)
+  return completed
+}
+
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After a successful merge, report the result as assistant text, then call suba_done. Do not use suba_ping to report success. Use suba_ping only if blocked. The merge skill handles rebasing, conflict resolution, integration, and worktree cleanup. Children must report the result and call suba_done after a successful merge if still running, even with autoComplete: false. Verify integration before approving the next merge; do not assume workmux closes the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success ping, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -481,7 +527,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_send",
     label: "Suba Send",
     description:
-      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After a successful merge, report the result as assistant text, then call suba_done. Do not use suba_ping to report success. Use suba_ping only if blocked. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
+      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_call, params) {
       const record = host.records.get(params.id)
@@ -520,6 +566,25 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
             0,
           )
         : new Text(theme.fg("dim", toolResultText(result)), 0, 0)
+    },
+  })
+  pi.registerTool({
+    name: "suba_finish",
+    label: "Suba Finish",
+    description:
+      "Record a verified result and close a waiting child's pane. After a worktree child pings merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
+    parameters: Type.Object({
+      id: Type.String(),
+      result: Type.String({ description: "Parent-verified completion summary to retain." }),
+    }),
+    async execute(_call, params) {
+      const record = await finishChild(host, params.id, params.result)
+      return {
+        content: [
+          { type: "text", text: `Finished ${record.name} (${record.id}): ${record.result}` },
+        ],
+        details: { id: record.id, name: record.name, state: record.state },
+      }
     },
   })
   pi.registerTool({

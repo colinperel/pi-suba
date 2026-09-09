@@ -28,13 +28,13 @@ describe("child launch validation", () => {
     process.env.SUBA_PI_EXECUTABLE = "./test/fixtures/fake-pi"
     expect(invocation()).toBe(`'${process.cwd()}/test/fixtures/fake-pi'`)
   })
-  it("requires worktree children to finish after successful integration", () => {
+  it("keeps worktree children waiting for parent-verified completion", () => {
     const prompt = childControlPrompt(true)
     expect(prompt).toContain("request merge approval with suba_ping and wait")
     expect(prompt).toContain("When the parent sends /skill:merge")
-    expect(prompt).toContain("After a successful merge, if you are still running")
-    expect(prompt).toContain("call suba_done, even when automatic completion is disabled")
-    expect(prompt).toContain("while integration remains unresolved")
+    expect(prompt).toContain("use suba_ping to report success or a blocker, then wait")
+    expect(prompt).toContain("Do not call suba_done for this workflow")
+    expect(prompt).toContain("uses suba_finish to record completion")
     expect(childControlPrompt(false)).not.toContain("/skill:merge")
   })
   it("requires fully qualified model identifiers", () => {
@@ -60,10 +60,9 @@ describe("child launch validation", () => {
     expect(description).toContain("suba_ping rather than finish with suba_done")
     expect(description).toContain("one at a time by sending /skill:merge via suba_send")
     expect(description).toContain("instructions appended after a space, not a newline")
-    expect(description).toContain("report the result as assistant text, then call suba_done")
-    expect(description).toContain("Do not use suba_ping to report success")
-    expect(description).toContain("Verify integration")
-    expect(description).toContain("call suba_done after a successful merge")
+    expect(description).toContain("use suba_ping to report success or a blocker, then wait")
+    expect(description).toContain("verify integration and call suba_finish")
+    expect(description).toContain("Leave blocked children open")
     expect(launchParametersSchema(profiles).properties.worktree).toMatchObject({
       description: expect.stringContaining("/skill:merge"),
     })

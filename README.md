@@ -107,6 +107,7 @@ For work with shared context:
 | ------------- | ----------------------------------------------------- |
 | `suba`        | Launch a child and return after target creation       |
 | `suba_send`   | Send guidance to a live child by ID                   |
+| `suba_finish` | Record a verified result and close a waiting child pane |
 | `suba_resume` | Continue a completed or exited child's session        |
 | `suba_list`   | Take a one-time snapshot of child status and activity |
 
@@ -137,7 +138,7 @@ instead of finishing with `suba_done`:
 ```json
 {
   "name": "review parser",
-  "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ping, then wait. Do not call suba_done before integration. If merge conflicts are unclear, request guidance with suba_ping.",
+  "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ping, then wait. After merging, report success or a blocker with suba_ping and wait for the parent to finish the session. Do not call suba_done.",
   "worktree": true,
   "autoComplete": false
 }
@@ -165,19 +166,28 @@ after a space, not a newline, so they accompany the expanded skill:
 ```json
 {
   "id": "<child-id>",
-  "message": "/skill:merge After a successful merge, report the result as assistant text, then call suba_done. Do not use suba_ping to report success. Use suba_ping only if blocked."
+  "message": "/skill:merge After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session."
 }
 ```
 
 Use `suba_send` for this message. The merge skill commits, rebases onto the local
 base branch, resolves conflicts while preserving both branches' changes, and
 merges with worktree cleanup. Workmux does not own the separately created pi-suba
-pane, so worktree children are instructed to briefly report the result and call
-`suba_done` after a successful merge if still running, even with automatic
-completion disabled. This records completion and shuts down the child session.
-Unresolved conflicts or merge failures require guidance, not completion. Verify
-integration before authorizing the next merge. Removed worktrees are reported as
-non-resumable; their saved transcripts and results remain available.
+pane. Children report success or blockers with `suba_ping` and remain available.
+After independently verifying integration, the parent calls `suba_finish`:
+
+```json
+{
+  "id": "<child-id>",
+  "result": "Verified parser changes are integrated into the base branch and tests pass."
+}
+```
+
+`suba_finish` requires a child awaiting parent guidance. It closes only that
+child's pane and records the parent's verified result as completed. It does not
+merge or remove worktrees. Leave blocked children open and send guidance instead.
+Finish a verified merge before authorizing the next one. Removed worktrees are
+reported as non-resumable; saved transcripts and results remain available.
 
 Without merge cleanup, the worktree persists when the child finishes. Resume
 launches reuse the same worktree and working directory. Remove it explicitly to
