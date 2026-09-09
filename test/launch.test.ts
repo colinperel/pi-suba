@@ -59,6 +59,9 @@ describe("child launch validation", () => {
     expect(description).toContain("autoComplete: false")
     expect(description).toContain("suba_ping rather than finish with suba_done")
     expect(description).toContain("one at a time by sending /skill:merge via suba_send")
+    expect(description).toContain("instructions appended in the same message")
+    expect(description).toContain("report the result as assistant text, then call suba_done")
+    expect(description).toContain("Do not use suba_ping to report success")
     expect(description).toContain("Verify integration")
     expect(description).toContain("call suba_done after a successful merge")
     expect(launchParametersSchema(profiles).properties.worktree).toMatchObject({

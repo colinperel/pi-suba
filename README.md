@@ -159,10 +159,14 @@ workmux.
 
 The parent authorizes merges one at a time. Ensure the child profile has
 `load-skills: true` and the `merge` skill is installed in its Pi environment. When
-ready to integrate, send the skill command as the entire message:
+ready to integrate, send the skill command with completion instructions appended
+in the same message so they accompany the expanded skill:
 
 ```json
-{ "id": "<child-id>", "message": "/skill:merge" }
+{
+  "id": "<child-id>",
+  "message": "/skill:merge\nAfter a successful merge, report the result as assistant text, then call suba_done. Do not use suba_ping to report success. Use suba_ping only if blocked."
+}
 ```
 
 Use `suba_send` for this message. The merge skill commits, rebases onto the local
