@@ -10,7 +10,7 @@ type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void
 type RegisteredTool = {
   execute: (
     id: string,
-    params: Record<string, never>,
+    params: Record<string, unknown>,
     signal: AbortSignal,
     update: () => void,
     ctx: ExtensionContext,
@@ -35,6 +35,51 @@ afterEach(async () => {
 })
 
 describe("child completion", () => {
+  it("keeps ping waiting and completion done through trailing tool events", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "ping"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = "0"
+    const handlers = new Map<string, Handler>()
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const ctx = {
+      sessionManager: { getBranch: () => [] },
+      shutdown() {},
+    } as unknown as ExtensionContext
+    const snapshot = () => readActivity(join(artifactDir, "activity.json"), "ping")
+    const trailingEvents = async () => {
+      await handlers.get("tool_execution_end")?.({}, ctx)
+      await handlers.get("tool_execution_update")?.({ toolName: "bash" }, ctx)
+      await handlers.get("message_update")?.({}, ctx)
+      await handlers.get("agent_settled")?.({}, ctx)
+    }
+    await tools
+      .get("suba_ping")!
+      .execute("call", { message: "help" }, new AbortController().signal, () => undefined, ctx)
+    await trailingEvents()
+    expect((await snapshot()).state).toBe("waiting")
+    await handlers.get("input")?.({}, ctx)
+    await handlers.get("agent_start")?.({}, ctx)
+    expect((await snapshot()).state).toBe("working")
+    await tools
+      .get("suba_done")!
+      .execute("call", {}, new AbortController().signal, () => undefined, ctx)
+    await trailingEvents()
+    expect((await snapshot()).state).toBe("done")
+    expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual([
+      "ping",
+      "completed",
+    ])
+  })
   it("marks manual agents waiting after settling and resumes activity on the next run", async () => {
     const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
     temporaryDirectories.push(artifactDir)
@@ -166,6 +211,13 @@ describe("child completion", () => {
     await handlers.get("agent_settled")?.({}, ctx)
     expect(shutdowns).toBe(0)
     expect(await readEvents(artifactDir, 0)).toEqual([])
+    expect((await readActivity(join(artifactDir, "activity.json"), "compaction")).state).toBe(
+      "waiting",
+    )
+    await handlers.get("agent_start")?.({}, ctx)
+    expect((await readActivity(join(artifactDir, "activity.json"), "compaction")).state).toBe(
+      "working",
+    )
 
     branch = [
       ...branch,

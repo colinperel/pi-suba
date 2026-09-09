@@ -17,6 +17,29 @@ export default async function (pi: ExtensionAPI) {
   const records = new Map<string, ChildRecord>()
   let latestCtx: ExtensionContext | undefined
   let renderTimer: NodeJS.Timeout | undefined
+  let ready = false
+  let sessionGeneration = 0
+  let publishedCount: number | undefined
+  const publishActivity = (force = false) => {
+    if (!ready) return
+    const activeCount = [...records.values()].filter(
+      (record) =>
+        isLive(record) &&
+        record.state !== "awaiting-parent" &&
+        (!record.activity ||
+          record.activity.state === "starting" ||
+          record.activity.state === "working"),
+    ).length
+    if (force || activeCount !== publishedCount) {
+      publishedCount = activeCount
+      pi.events.emit("suba:activity", { activeCount })
+    }
+  }
+  let unsubscribeActivity: (() => void) | undefined
+  const subscribeActivity = () => {
+    unsubscribeActivity ??= pi.events.on("suba:activity:request", () => publishActivity(true))
+  }
+  subscribeActivity()
   const refreshWidget = () => {
     if (!latestCtx?.hasUI) return
     const projection = projectWidget([...records.values()], Date.now(), config.activity.maxRows)
@@ -41,7 +64,10 @@ export default async function (pi: ExtensionAPI) {
     config,
     profiles,
     records,
-    persist: (record: ChildRecord) => pi.appendEntry("suba-child", record),
+    persist: (record: ChildRecord) => {
+      pi.appendEntry("suba-child", record)
+      publishActivity()
+    },
     refreshWidget,
     watch: (id: string) => void watcher.check(id),
   } satisfies ManagerHost
@@ -50,7 +76,7 @@ export default async function (pi: ExtensionAPI) {
     get: (id: string) => records.get(id),
     update: (record: ChildRecord, notify?: { type: "result" | "ping"; content: string }) => {
       records.set(record.id, record)
-      pi.appendEntry("suba-child", record)
+      host.persist(record)
       refreshWidget()
       if (!isLive(record) && record.windowId && record.placement.type === "shared-window")
         void applySharedWindowGrid(record.windowId).catch(() => undefined)
@@ -78,6 +104,7 @@ export default async function (pi: ExtensionAPI) {
     },
     activity: (record: ChildRecord) => {
       records.set(record.id, record)
+      publishActivity()
       refreshWidget()
     },
   }
@@ -101,24 +128,45 @@ export default async function (pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${instructions}` }
   })
   pi.on("session_start", async (_event, ctx) => {
+    const generation = ++sessionGeneration
+    ready = false
+    watcher.stop()
+    subscribeActivity()
+    const [nextConfig, nextInstructions, nextProfiles] = await Promise.all([
+      loadConfig(),
+      loadInstructions(),
+      loadProfiles(),
+    ])
+    if (generation !== sessionGeneration) return
+    config = nextConfig
+    instructions = nextInstructions
+    profiles = nextProfiles
     latestCtx = ctx
-    config = await loadConfig()
-    instructions = await loadInstructions()
-    profiles = await loadProfiles()
     host.config = config
     host.profiles = profiles
     records.clear()
     for (const [id, record] of restoreRegistry(ctx.sessionManager.getEntries()))
       records.set(id, record)
-    for (const record of records.values()) if (isLive(record)) void watcher.check(record.id)
+    // Persisted activity can lag behind children that kept running while the parent was away.
+    await watcher.tick()
+    if (generation !== sessionGeneration) return
+    ready = true
+    publishActivity(true)
     watcher.start()
     refreshWidget()
   })
   pi.on("session_shutdown", () => {
+    sessionGeneration += 1
+    ready = false
     watcher.stop()
+    unsubscribeActivity?.()
+    unsubscribeActivity = undefined
+    records.clear()
+    publishedCount = 0
+    pi.events.emit("suba:activity", { activeCount: 0 })
     if (renderTimer) clearInterval(renderTimer)
     renderTimer = undefined
-    latestCtx?.ui.setWidget("suba-activity", undefined)
+    if (latestCtx?.hasUI) latestCtx.ui.setWidget("suba-activity", undefined)
     latestCtx = undefined
   })
 }

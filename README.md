@@ -316,6 +316,19 @@ receives more input.
 If a child closes before recording completion, it is marked interrupted. Use `suba_resume` with its
 stable child ID to continue the same session with a new task.
 
+### Inter-extension activity
+
+The parent extension emits `suba:activity` on `pi.events` with an unversioned
+`{ activeCount: number }` snapshot for the current parent session. The count includes children
+starting or working, including newly launched children before their first activity file. Waiting
+children and terminal records are excluded, independently of the TUI widget.
+
+Snapshots are emitted when the count changes, after restored children have been checked, and as
+`{ activeCount: 0 }` on session teardown. Other extensions can subscribe and then emit
+`suba:activity:request` to request the current snapshot. Requests before restoration finishes are
+satisfied by the restoration snapshot, not a provisional zero. The request listener is removed on
+teardown. Child changes are observed at the configured `activity.pollMs` interval, also without a UI.
+
 ## Artifacts and environment variables
 
 Each child stores its session, prompt files, activity, lifecycle events, launch script, and process

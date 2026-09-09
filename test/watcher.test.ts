@@ -1,11 +1,15 @@
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { ChildWatcher } from "../src/parent/watcher.ts"
 import type { ChildRecord } from "../src/parent/registry.ts"
 import { seedSession } from "../src/shared/sessions.ts"
-import { writeEvent } from "../src/shared/protocol.ts"
+import { writeEvent, type ChildActivity } from "../src/shared/protocol.ts"
+import * as protocol from "../src/shared/protocol.ts"
+import * as sessions from "../src/shared/sessions.ts"
+
+afterEach(() => vi.restoreAllMocks())
 
 function makeRecord(dir: string): ChildRecord {
   return {
@@ -33,6 +37,63 @@ function makeRecord(dir: string): ChildRecord {
 }
 
 describe("parent watcher", () => {
+  it.each(["stop", "replace"])("discards a pending activity read after %s", async (action) => {
+    let record = makeRecord("/unused")
+    let release!: (activity: ChildActivity) => void
+    const read = vi.spyOn(protocol, "readActivity").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    )
+    const update = vi.fn()
+    const activity = vi.fn()
+    const watcher = new ChildWatcher(500, {
+      list: () => [record],
+      get: () => record,
+      update,
+      activity,
+    })
+    const checking = watcher.check(record.id)
+    expect(watcher.check(record.id)).toBe(checking)
+    if (action === "stop") watcher.stop()
+    else record = { ...record, revision: 2, state: "completed" }
+    release({ version: 1, childId: record.id, sequence: 1, updatedAt: 1, state: "working" })
+    await checking
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(update).not.toHaveBeenCalled()
+    expect(activity).not.toHaveBeenCalled()
+  })
+
+  it("discards a pending completion result after stop and restart", async () => {
+    const record = makeRecord("/unused")
+    vi.spyOn(protocol, "readActivity").mockRejectedValue({ code: "ENOENT" })
+    vi.spyOn(protocol, "readEvents").mockResolvedValue([
+      { version: 1, childId: record.id, sequence: 1, timestamp: 1, type: "completed" },
+    ])
+    let release!: (result: { text: string }) => void
+    vi.spyOn(sessions, "extractResult").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    )
+    const update = vi.fn()
+    const watcher = new ChildWatcher(60_000, {
+      list: () => [record],
+      get: () => record,
+      update,
+      activity: vi.fn(),
+    })
+    const checking = watcher.check(record.id)
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"))
+    watcher.stop()
+    watcher.start()
+    release({ text: "old result" })
+    await checking
+    watcher.stop()
+    expect(update).not.toHaveBeenCalled()
+  })
   it("processes completion events once and extracts the run result", async () => {
     const dir = await mkdtemp(join(tmpdir(), "suba-watcher-"))
     const entries = [

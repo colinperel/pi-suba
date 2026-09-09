@@ -109,13 +109,16 @@ export default function (pi: ExtensionAPI) {
       await activity.model()
     }
   })
-  pi.on("agent_start", () => activity.model())
-  pi.on("turn_start", () => activity.model())
-  pi.on("before_provider_request", () => activity.model())
-  pi.on("message_update", () => activity.streaming())
-  pi.on("tool_execution_start", (event) => activity.tool(event.toolName))
-  pi.on("tool_execution_update", (event) => activity.tool(event.toolName))
-  pi.on("tool_execution_end", () => activity.model())
+  const working = (update: () => Promise<void>) => {
+    if (lifecycle === "running") return update()
+  }
+  pi.on("agent_start", () => working(() => activity.model()))
+  pi.on("turn_start", () => working(() => activity.model()))
+  pi.on("before_provider_request", () => working(() => activity.model()))
+  pi.on("message_update", () => working(() => activity.streaming()))
+  pi.on("tool_execution_start", (event) => working(() => activity.tool(event.toolName)))
+  pi.on("tool_execution_update", (event) => working(() => activity.tool(event.toolName)))
+  pi.on("tool_execution_end", () => working(() => activity.model()))
   pi.on("model_select", (event) => activity.selected(event.model.provider, event.model.id))
   pi.on("thinking_level_select", (event) => activity.thinking(event.level as ThinkingLevel))
   pi.on("agent_settled", async (_event, ctx) => {

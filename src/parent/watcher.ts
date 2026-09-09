@@ -14,7 +14,8 @@ export interface WatcherCallbacks {
 
 export class ChildWatcher {
   private timer?: NodeJS.Timeout
-  private ticking = false
+  private generation = 0
+  private checks = new Map<string, Promise<void>>()
   constructor(
     private readonly pollMs: number,
     private readonly callbacks: WatcherCallbacks,
@@ -25,26 +26,37 @@ export class ChildWatcher {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
+    this.generation += 1
+    this.checks.clear()
   }
   async tick(): Promise<void> {
-    if (this.ticking) return
-    this.ticking = true
-    try {
-      for (const record of this.callbacks.list()) await this.check(record.id)
-    } finally {
-      this.ticking = false
-    }
+    await Promise.all(this.callbacks.list().map((record) => this.check(record.id)))
   }
-  async check(id: string): Promise<void> {
+  check(id: string): Promise<void> {
+    const pending = this.checks.get(id)
+    if (pending) return pending
+    const check = this.checkRecord(id).finally(() => {
+      if (this.checks.get(id) === check) this.checks.delete(id)
+    })
+    this.checks.set(id, check)
+    return check
+  }
+  private async checkRecord(id: string): Promise<void> {
     let record = this.callbacks.get(id)
     if (!record || !["launching", "running", "awaiting-parent"].includes(record.state)) return
+    const generation = this.generation
+    const current = () => generation === this.generation && this.callbacks.get(id) === record
+    let freshWorking = false
     try {
       const activity = await readActivity(join(record.artifactDir, "activity.json"), id)
+      if (!current()) return
       if (!record.activity || activity.sequence > record.activity.sequence) {
+        freshWorking = activity.state === "working"
         record = { ...record, activity, activityError: undefined }
         this.callbacks.activity(record)
       }
     } catch (error) {
+      if (!current()) return
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         record = {
           ...record,
@@ -56,7 +68,9 @@ export class ChildWatcher {
     let events: ChildEvent[]
     try {
       events = await readEvents(record.artifactDir, record.lastEventSequence)
+      if (!current()) return
     } catch (error) {
+      if (!current()) return
       this.callbacks.activity({
         ...record,
         activityError: error instanceof Error ? error.message : String(error),
@@ -77,7 +91,9 @@ export class ChildWatcher {
         lastEventSequence: event.sequence,
       }
       if (event.type === "ping") {
-        record.state = "awaiting-parent"
+        freshWorking =
+          record.activity?.state === "working" && record.activity.updatedAt >= event.timestamp
+        record.state = freshWorking ? "running" : "awaiting-parent"
         this.callbacks.update(record, {
           type: "ping",
           content: `Subagent ${record.name} (${id}) needs guidance:\n\n${event.message}`,
@@ -91,7 +107,10 @@ export class ChildWatcher {
         })
         return
       } else {
+        // The event revision is local until the result has been read.
+        const stored = this.callbacks.get(id)
         const result = await extractResult(record.sessionFile, record.resultAfterEntry)
+        if (generation !== this.generation || this.callbacks.get(id) !== stored) return
         record.state = result.error ? "failed" : "completed"
         record.error = result.error
         record.result = result.text
@@ -102,12 +121,18 @@ export class ChildWatcher {
         return
       }
     }
-    record = this.callbacks.get(id) ?? record
+    if (record.state === "awaiting-parent" && freshWorking) {
+      record = { ...record, revision: record.revision + 1, state: "running" }
+      this.callbacks.update(record)
+    }
+    if (!current()) return
     if (!["launching", "running", "awaiting-parent"].includes(record.state)) return
     const exitPath = join(record.artifactDir, "process-exit")
     try {
       const exitCode = Number.parseInt((await readFile(exitPath, "utf8")).trim(), 10)
+      if (!current()) return
       const result = await extractResult(record.sessionFile, record.resultAfterEntry)
+      if (!current()) return
       const failed = exitCode !== 0 || !!result.error
       const next = {
         ...record,
@@ -124,9 +149,11 @@ export class ChildWatcher {
       })
       return
     } catch (error) {
+      if (!current()) return
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
     if (record.paneId && !(await paneExists(record.paneId))) {
+      if (!current()) return
       const next = {
         ...record,
         revision: record.revision + 1,

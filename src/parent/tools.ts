@@ -253,6 +253,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     if (resume) {
       resultAfterEntry = await countSessionEntries(sessionFile)
       await rm(join(artifactDir, "process-exit"), { force: true })
+      await rm(join(artifactDir, "activity.json"), { force: true })
     } else {
       const parentSession = ctx.sessionManager.getSessionFile()
       const entries =
@@ -429,11 +430,12 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       if (!record || !isLive(record) || !record.paneId)
         throw new Error(`Subagent ${params.id} is not live`)
       await sendToPane(record.paneId, params.message)
+      const latest = host.records.get(params.id)
       const running =
-        record.state === "awaiting-parent"
-          ? { ...record, revision: record.revision + 1, state: "running" as const }
-          : record
-      if (running !== record) {
+        latest?.state === "awaiting-parent"
+          ? { ...latest, revision: latest.revision + 1, state: "running" as const }
+          : (latest ?? record)
+      if (latest && running !== latest) {
         host.records.set(record.id, running)
         host.persist(running)
         host.refreshWidget()
