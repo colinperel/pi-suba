@@ -114,7 +114,7 @@ Use real mode for these flows:
 3. Confirm the extension sentinel records only `parent`.
 4. Launch a `persistent` child, interact in its pane, and call
    `suba_done`.
-5. Ask a child to call `suba_ping`, send guidance, and verify the same pane and
+5. Ask a child to call `suba_ask`, send guidance, and verify the same pane and
    session continue.
 6. Change the child model and thinking level interactively and inspect
    `activity.json`.

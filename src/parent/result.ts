@@ -7,6 +7,7 @@ import { guidanceColor } from "./style.ts"
 type Theme = ExtensionContext["ui"]["theme"]
 
 export interface SubagentMessageDetails {
+  type?: "result" | "ask" | "notify"
   id?: string
   name?: string
   state?: RegistryState
@@ -130,7 +131,15 @@ export function renderSubagentMessage(
   expansionHint: string,
   theme: Theme,
 ): Component {
-  const state = presentation(details.state)
+  const state =
+    details.type === "notify"
+      ? {
+          glyph: "i",
+          label: "update",
+          tone: "success" as const,
+          background: "toolPendingBg" as const,
+        }
+      : presentation(details.type === "ask" ? "awaiting-parent" : details.state)
   const container = new Container()
   const elapsed = details.elapsed === undefined ? undefined : formatElapsed(details.elapsed)
   const color =

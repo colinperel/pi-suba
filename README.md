@@ -132,13 +132,13 @@ Explicit models must exist in Pi's model registry and belong to the active model
 
 Use `worktree: true` for children modifying code in parallel with the parent or
 other children. Omit it for read-only tasks. To keep a child available for merge
-approval, set `autoComplete: false` and ask it to request approval with `suba_ping`
+approval, set `autoComplete: false` and ask it to request approval with `suba_ask`
 instead of finishing with `suba_done`:
 
 ```json
 {
   "name": "review parser",
-  "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ping, then wait. After merging, report success or a blocker with suba_ping and wait for the parent to finish the session. Do not call suba_done.",
+  "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ask, then wait. After merging, report success or a blocker with suba_ask and wait for the parent to finish the session. Do not call suba_done.",
   "worktree": true,
   "autoComplete": false
 }
@@ -166,14 +166,14 @@ after a space, not a newline, so they accompany the expanded skill:
 ```json
 {
   "id": "<child-id>",
-  "message": "/skill:merge After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session."
+  "message": "/skill:merge After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session."
 }
 ```
 
 Use `suba_send` for this message. The merge skill commits, rebases onto the local
 base branch, resolves conflicts while preserving both branches' changes, and
 merges with worktree cleanup. Workmux does not own the separately created pi-suba
-pane. Children report success or blockers with `suba_ping` and remain available.
+pane. Children report success or blockers with `suba_ask` and remain available.
 After independently verifying integration, the parent calls `suba_finish`:
 
 ```json
@@ -203,15 +203,26 @@ command while preserving both errors.
 
 ## Child tools
 
-Every child receives two control tools in addition to its profile's tools:
+Every child receives three control tools in addition to its profile's tools:
 
 | Tool        | Purpose                                                 |
 | ----------- | ------------------------------------------------------- |
 | `suba_done` | Finish immediately and return the latest assistant text |
-| `suba_ping` | Ask the parent for guidance without closing the session |
+| `suba_notify` | Send an update and continue working without acknowledgement |
+| `suba_ask` | Ask for a decision or missing information only when blocked |
 
-When a child calls `suba_ping`, it enters an awaiting-parent state. The parent receives the question
+When a child calls `suba_ask`, it enters an awaiting-parent state. The parent receives the question
 and can answer with `suba_send`. You can also focus the child's tmux pane and type directly into it.
+
+Notifications and questions are both recorded in event artifacts and delivered to the parent
+through the same mechanism, starting a parent turn. `suba_notify` does not pause the child
+or require a response. `suba_ask` stops the current run until guidance arrives.
+
+Historical `ping` event files remain supported as blocking questions, including on parent
+restoration. Existing transcript calls to `suba_ping` remain historical records, but the old
+tool is no longer registered or callable. Resumed children receive instructions to use
+`suba_ask` instead; update custom prompts and tool allowlists that name `suba_ping`.
+Already-running children can still emit legacy `ping` events to an updated parent.
 
 ## Configuration
 
@@ -348,7 +359,7 @@ Two tool policies are available:
 | `default`   | `read`, `bash`, `edit`, `write` |
 | `read-only` | `read`, `bash`                  |
 
-Both policies also include `suba_done` and `suba_ping`. `read-only` limits Pi's direct tool
+Both policies also include `suba_done`, `suba_notify`, and `suba_ask`. `read-only` limits Pi's direct tool
 selection, but `bash` can still modify the filesystem. It is not a security boundary.
 
 A built-in `default` profile is always available. It uses the default tool policy, loads context

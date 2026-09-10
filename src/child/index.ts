@@ -76,18 +76,41 @@ export default function (pi: ExtensionAPI) {
     },
   })
   pi.registerTool({
-    name: "suba_ping",
-    label: "Suba Ping",
+    name: "suba_notify",
+    label: "Suba Notify",
     description:
-      "Ask the parent agent for guidance without closing this Pi session. The current run stops until guidance arrives.",
+      "Send the parent a progress update or finding and continue working. No response is required. Use suba_ask instead only when blocked on parent guidance.",
+    parameters: Type.Object({
+      message: Type.String({ description: "Progress update or finding" }),
+    }),
+    async execute(_id, params) {
+      if (lifecycle !== "running")
+        throw new Error(`suba_notify is unavailable while lifecycle is ${lifecycle}`)
+      await events.notify(params.message)
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Parent notified. Continue your assigned work; no acknowledgement is required.",
+          },
+        ],
+        details: {},
+      }
+    },
+  })
+  pi.registerTool({
+    name: "suba_ask",
+    label: "Suba Ask",
+    description:
+      "Ask the parent for a decision or missing information only when blocked. The current run stops until guidance arrives. For progress updates, use suba_notify instead.",
     parameters: Type.Object({
       message: Type.String({ description: "Question or requested parent action" }),
     }),
     async execute(_id, params) {
       if (lifecycle !== "running")
-        throw new Error(`suba_ping is unavailable while lifecycle is ${lifecycle}`)
+        throw new Error(`suba_ask is unavailable while lifecycle is ${lifecycle}`)
       lifecycle = "awaiting-parent"
-      await events.ping(params.message)
+      await events.ask(params.message)
       await activity.waiting()
       return {
         content: [{ type: "text", text: "Parent guidance requested. Waiting for input." }],

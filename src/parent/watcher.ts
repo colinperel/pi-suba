@@ -8,7 +8,7 @@ import type { ChildRecord } from "./registry.ts"
 export interface WatcherCallbacks {
   list(): ChildRecord[]
   get(id: string): ChildRecord | undefined
-  update(record: ChildRecord, notify?: { type: "result" | "ping"; content: string }): void
+  update(record: ChildRecord, notify?: { type: "result" | "ask" | "notify"; content: string }): void
   activity(record: ChildRecord): void
 }
 
@@ -90,12 +90,17 @@ export class ChildWatcher {
         revision: record.revision + 1,
         lastEventSequence: event.sequence,
       }
-      if (event.type === "ping") {
+      if (event.type === "notify") {
+        this.callbacks.update(record, {
+          type: "notify",
+          content: `Subagent ${record.name} (${id}) update (no response required):\n\n${event.message}`,
+        })
+      } else if (event.type === "ask" || event.type === "ping") {
         freshWorking =
           record.activity?.state === "working" && record.activity.updatedAt >= event.timestamp
         record.state = freshWorking ? "running" : "awaiting-parent"
         this.callbacks.update(record, {
-          type: "ping",
+          type: "ask",
           content: `Subagent ${record.name} (${id}) needs guidance:\n\n${event.message}`,
         })
       } else if (event.type === "failed") {

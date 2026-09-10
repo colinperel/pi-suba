@@ -60,6 +60,24 @@ describe("completed result rendering", () => {
     expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true)
   })
 
+  it.each(["notify", "ask"] as const)("renders %s independently of current lifecycle", (type) => {
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as never
+    const card = renderSubagentMessage(
+      "Subagent research update:\n\ncheckpoint",
+      { name: "research", state: "running", type },
+      false,
+      "expand",
+      theme,
+    )
+    const text = card.render(80).join("\n")
+    expect(text).toContain(type === "notify" ? "update" : "needs guidance")
+    expect(text).not.toContain("failed")
+  })
+
   it("renders a compact width-safe completion card", () => {
     const theme = {
       fg: (_color: string, text: string) => text,

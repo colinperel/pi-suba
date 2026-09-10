@@ -29,7 +29,7 @@ export type ChildEvent =
       childId: string
       sequence: number
       timestamp: number
-      type: "ping"
+      type: "ping" | "ask" | "notify"
       message: string
     }
   | {
@@ -80,7 +80,7 @@ export async function readEvents(
   }
   const result: ChildEvent[] = []
   for (const name of names
-    .filter((item) => /^\d{6}-(ping|completed|failed)\.json$/.test(item))
+    .filter((item) => /^\d{6}-(ping|ask|notify|completed|failed)\.json$/.test(item))
     .sort()) {
     const sequence = Number.parseInt(name.slice(0, 6), 10)
     if (sequence <= afterSequence) continue

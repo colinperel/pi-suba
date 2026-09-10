@@ -55,11 +55,11 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
-const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_ping only when parent guidance is required. Use suba_done to finish immediately. Automatic completion ends a settled run when enabled.`
+const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for progress updates or findings and continue working without acknowledgement. Use suba_ask only when blocked on a parent decision or missing information; it pauses the current run until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done to finish immediately. Automatic completion ends a settled run when enabled.`
 
 export function childControlPrompt(worktree: boolean): string {
   if (!worktree) return CONTROL_PROMPT
-  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ping and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and close this separately managed pane. Workmux handles worktree cleanup, not this pane.`
+  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ask and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and close this separately managed pane. Workmux handles worktree cleanup, not this pane.`
 }
 
 export interface ManagerHost {
@@ -115,7 +115,7 @@ export async function finishChild(
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ping rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success ping, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results, notifications, and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -365,7 +365,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         "-e",
         childExtension,
         "--tools",
-        [...TOOL_POLICIES[resolvedLaunch.tools], "suba_done", "suba_ping"].join(","),
+        [...TOOL_POLICIES[resolvedLaunch.tools], "suba_done", "suba_notify", "suba_ask"].join(","),
         "--session",
         sessionFile,
         "--name",
@@ -529,7 +529,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_send",
     label: "Suba Send",
     description:
-      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ping to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
+      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_call, params) {
       const record = host.records.get(params.id)
@@ -574,7 +574,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_finish",
     label: "Suba Finish",
     description:
-      "Record a verified result and close a waiting child's pane. After a worktree child pings merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
+      "Record a verified result and close a waiting child's pane. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
     parameters: Type.Object({
       id: Type.String(),
       result: Type.String({ description: "Parent-verified completion summary to retain." }),

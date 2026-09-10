@@ -21,7 +21,7 @@ export class EventWriter {
   }
   private async emit(
     event:
-      | { type: "ping"; message: string }
+      | { type: "ask" | "notify"; message: string }
       | { type: "completed" }
       | { type: "failed"; error: string },
   ): Promise<void> {
@@ -34,8 +34,11 @@ export class EventWriter {
       timestamp: Date.now(),
     } as ChildEvent)
   }
-  ping(message: string): Promise<void> {
-    return this.emit({ type: "ping", message })
+  ask(message: string): Promise<void> {
+    return this.emit({ type: "ask", message })
+  }
+  notify(message: string): Promise<void> {
+    return this.emit({ type: "notify", message })
   }
   completed(): Promise<void> {
     return this.emit({ type: "completed" })

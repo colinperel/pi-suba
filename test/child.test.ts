@@ -62,9 +62,10 @@ describe("child completion", () => {
       await handlers.get("message_update")?.({}, ctx)
       await handlers.get("agent_settled")?.({}, ctx)
     }
-    await tools
-      .get("suba_ping")!
+    const question = await tools
+      .get("suba_ask")!
       .execute("call", { message: "help" }, new AbortController().signal, () => undefined, ctx)
+    expect(question.terminate).toBe(true)
     await trailingEvents()
     expect((await snapshot()).state).toBe("waiting")
     await handlers.get("input")?.({}, ctx)
@@ -76,7 +77,51 @@ describe("child completion", () => {
     await trailingEvents()
     expect((await snapshot()).state).toBe("done")
     expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual([
-      "ping",
+      "ask",
+      "completed",
+    ])
+  })
+  it("notifies and continues to completion without parent input", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "ping"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = "0"
+    const handlers = new Map<string, Handler>()
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const ctx = {
+      sessionManager: { getBranch: () => [] },
+      shutdown() {},
+    } as unknown as ExtensionContext
+    const snapshot = () => readActivity(join(artifactDir, "activity.json"), "ping")
+    const trailingEvents = async () => {
+      await handlers.get("tool_execution_end")?.({}, ctx)
+      await handlers.get("tool_execution_update")?.({ toolName: "bash" }, ctx)
+      await handlers.get("message_update")?.({}, ctx)
+      await handlers.get("agent_settled")?.({}, ctx)
+    }
+    const notification = await tools
+      .get("suba_notify")!
+      .execute("call", { message: "help" }, new AbortController().signal, () => undefined, ctx)
+    expect(notification.terminate).not.toBe(true)
+    expect(tools.has("suba_ping")).toBe(false)
+    await handlers.get("tool_execution_start")?.({ toolName: "write" }, ctx)
+    expect((await snapshot()).state).toBe("working")
+    await tools
+      .get("suba_done")!
+      .execute("call", {}, new AbortController().signal, () => undefined, ctx)
+    await trailingEvents()
+    expect((await snapshot()).state).toBe("done")
+    expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual([
+      "notify",
       "completed",
     ])
   })

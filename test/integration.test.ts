@@ -47,7 +47,7 @@ describe.skipIf(!model)("real Pi integration", () => {
         "-e",
         quote(childExtension),
         "--tools",
-        "suba_done,suba_ping",
+        "suba_done,suba_notify,suba_ask",
         "--no-context-files",
         "--no-skills",
         "--session",

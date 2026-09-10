@@ -146,6 +146,38 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
 }
 
 describe("parent activity event bus", () => {
+  it.each(["notify", "ask", "ping"] as const)(
+    "restores and persists %s events without redelivery",
+    async (type) => {
+      const child = await record(type)
+      await writeEvent(child.artifactDir, {
+        version: 1,
+        childId: child.id,
+        sequence: 1,
+        timestamp: 1,
+        type,
+        message: "checkpoint",
+      })
+      const parent = await harness([child])
+      await parent.emit("session_start")
+      const expectedType = type === "ping" ? "ask" : type
+      expect(parent.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("checkpoint"),
+          details: expect.objectContaining({ type: expectedType }),
+        }),
+        { deliverAs: "steer", triggerTurn: true },
+      )
+      const persisted = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+      expect(persisted.lastEventSequence).toBe(1)
+      expect(persisted.state).toBe(type === "notify" ? "running" : "awaiting-parent")
+      const restored = await harness([JSON.parse(JSON.stringify(persisted))])
+      await restored.emit("session_start")
+      expect(restored.sendMessage).not.toHaveBeenCalled()
+      expect((await restored.list())[0]!.state).toBe(persisted.state)
+    },
+  )
+
   it("publishes authoritative snapshots after restoration and on requests regardless of listener order", async () => {
     const child = await record("worker")
     await activity(child, "working")
@@ -215,8 +247,8 @@ describe("parent activity event bus", () => {
     ])
   })
 
-  it("handles ping, guidance and direct child input without stale awaiting-parent state", async () => {
-    const child = await record("ping")
+  it("handles ask, guidance and direct child input without stale awaiting-parent state", async () => {
+    const child = await record("ask")
     await activity(child, "working")
     const parent = await harness([child])
     await parent.emit("session_start")
@@ -225,7 +257,7 @@ describe("parent activity event bus", () => {
       childId: child.id,
       sequence: 1,
       timestamp: 2,
-      type: "ping",
+      type: "ask",
       message: "help",
     })
     await activity(child, "waiting", 2)
@@ -241,7 +273,7 @@ describe("parent activity event bus", () => {
       childId: child.id,
       sequence: 2,
       timestamp: 4,
-      type: "ping",
+      type: "ask",
       message: "help again",
     })
     await activity(child, "waiting", 4)

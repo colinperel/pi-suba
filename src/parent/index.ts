@@ -74,7 +74,10 @@ export default async function (pi: ExtensionAPI) {
   const callbacks = {
     list: () => [...records.values()],
     get: (id: string) => records.get(id),
-    update: (record: ChildRecord, notify?: { type: "result" | "ping"; content: string }) => {
+    update: (
+      record: ChildRecord,
+      notify?: { type: "result" | "ask" | "notify"; content: string },
+    ) => {
       if (!isLive(records.get(record.id) ?? record)) return
       records.set(record.id, record)
       host.persist(record)
@@ -89,6 +92,7 @@ export default async function (pi: ExtensionAPI) {
             display: true,
             details: {
               id: record.id,
+              type: notify.type,
               name: record.name,
               state: record.state,
               sessionFile: record.sessionFile,
