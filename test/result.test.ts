@@ -9,6 +9,31 @@ import {
 } from "../src/parent/result.ts"
 
 describe("completed result rendering", () => {
+  it("keeps context metadata out of result previews and renders it on collapsed cards", () => {
+    const content =
+      "Subagent worker (abc) completed:\nLast request context: 202,000 tokens, including cached input\n\nfinished"
+    expect(resultBody(content)).toBe("finished")
+    expect(
+      resultBody("Subagent worker failed: unavailable\nLast request context: unavailable"),
+    ).toBe("unavailable")
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as never
+    const lines = renderSubagentMessage(
+      content,
+      { type: "result", state: "completed", lastRequestContextTokens: 202000 },
+      false,
+      "expand",
+      theme,
+    ).render(80)
+    expect(lines.join("\n")).toContain(
+      "Last request context: 202,000 tokens, including cached input",
+    )
+    expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true)
+  })
+
   it("counts only child result lines", () => {
     const content = "Subagent research (abc123) completed:\n\nfirst line\nsecond line\n"
     expect(resultBodyLineCount(content)).toBe(2)

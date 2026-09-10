@@ -60,6 +60,10 @@ describe.skipIf(!model)("real Pi integration", () => {
       await waitForCompletion(artifactDir)
       const events = await readEvents(artifactDir, 0)
       expect(events.at(-1)?.type).toBe("completed")
+      const measured = (await readActivity(join(artifactDir, "activity.json"), "realtest"))
+        .lastRequestContextTokens
+      expect(measured).toBeGreaterThan(0)
+      expect((await extractResult(sessionFile)).lastRequestContextTokens).toBe(measured)
       expect((await extractResult(sessionFile)).text?.toLowerCase()).toContain(
         "pi-suba integration ok",
       )

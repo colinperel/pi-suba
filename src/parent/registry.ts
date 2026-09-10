@@ -43,6 +43,7 @@ export interface ChildRecord {
   result?: string
   error?: string
   activity?: ChildActivity
+  lastRequestContextTokens?: number
   activityError?: string
 }
 

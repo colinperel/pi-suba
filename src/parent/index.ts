@@ -1,4 +1,5 @@
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { formatRequestContext } from "../shared/context-tokens.ts"
 import { loadConfig, type SubaConfig } from "../shared/config.ts"
 import { loadInstructions } from "../shared/instructions.ts"
 import { loadProfiles, type Profile } from "../shared/profiles.ts"
@@ -88,7 +89,14 @@ export default async function (pi: ExtensionAPI) {
         pi.sendMessage(
           {
             customType: "suba-result",
-            content: notify.content,
+            content:
+              notify.type === "result"
+                ? notify.content.replace(
+                    /^[^\n]*/,
+                    (header) =>
+                      `${header}\n${formatRequestContext(record.lastRequestContextTokens)}`,
+                  )
+                : notify.content,
             display: true,
             details: {
               id: record.id,
@@ -100,6 +108,7 @@ export default async function (pi: ExtensionAPI) {
               profile: record.profile,
               model: record.activity?.model ?? record.resolvedLaunch.model,
               thinking: record.activity?.thinking ?? record.resolvedLaunch.thinking,
+              lastRequestContextTokens: record.lastRequestContextTokens,
               elapsed: Date.now() - record.startedAt,
               error: record.error,
             } satisfies SubagentMessageDetails,

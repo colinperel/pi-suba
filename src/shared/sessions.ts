@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
+import { latestRequestContextTokens } from "./context-tokens.ts"
 
 interface Entry {
   type: string
@@ -53,14 +54,16 @@ export async function countSessionEntries(path: string): Promise<number> {
 export async function extractResult(
   path: string,
   afterEntry = 0,
-): Promise<{ text?: string; error?: string }> {
+): Promise<{ text?: string; error?: string; lastRequestContextTokens?: number }> {
   const lines = (await readFile(path, "utf8")).split("\n").filter(Boolean).slice(afterEntry)
   const entries = lines.map((line) => JSON.parse(line) as Entry)
+  const tokens = latestRequestContextTokens(entries)
+  const context = tokens === undefined ? {} : { lastRequestContextTokens: tokens }
   for (let index = entries.length - 1; index >= 0; index--) {
     const message = entries[index]?.message
     if (entries[index]?.type !== "message" || message?.role !== "assistant") continue
     if (message.stopReason === "error")
-      return { error: message.errorMessage || "provider request failed" }
+      return { ...context, error: message.errorMessage || "provider request failed" }
     const content = Array.isArray(message.content) ? message.content : []
     const text = content
       .filter(
@@ -73,7 +76,7 @@ export async function extractResult(
       .map((part) => part.text)
       .join("\n")
       .trim()
-    if (text) return { text }
+    if (text) return { ...context, text }
   }
-  return {}
+  return context
 }

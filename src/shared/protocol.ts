@@ -21,6 +21,7 @@ export interface ChildActivity {
   provider?: string
   model?: string
   thinking?: ThinkingLevel
+  lastRequestContextTokens?: number
 }
 
 export type ChildEvent =

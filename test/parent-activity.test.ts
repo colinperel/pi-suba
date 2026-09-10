@@ -146,6 +146,49 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
 }
 
 describe("parent activity event bus", () => {
+  it.each([202000, undefined])(
+    "exposes completion context %s and restores it before resume",
+    async (tokens) => {
+      const child = await record("context")
+      await seedSession(child.sessionFile, root, undefined, [
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "finished" }],
+            ...(tokens === undefined
+              ? {}
+              : { usage: { input: 2000, cacheRead: 190000, cacheWrite: 10000 } }),
+          },
+        },
+      ])
+      await writeEvent(child.artifactDir, {
+        version: 1,
+        childId: child.id,
+        sequence: 1,
+        timestamp: 1,
+        type: "completed",
+      })
+      const parent = await harness([child])
+      await parent.emit("session_start")
+      expect(parent.sendMessage.mock.calls[0]![0].content).toContain(
+        tokens === undefined
+          ? "Last request context: unavailable"
+          : "Last request context: 202,000 tokens, including cached input",
+      )
+      expect(parent.sendMessage.mock.calls[0]![0].content).toContain("\n\nfinished")
+      const persisted = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+      expect(persisted.lastRequestContextTokens).toBe(tokens)
+      const restored = await harness([JSON.parse(JSON.stringify(persisted))])
+      await restored.emit("session_start")
+      const result = await restored.execute("suba_list")
+      const visible = JSON.parse(result.content[0].text)[0]
+      expect(visible.lastRequestContextTokens).toBe(tokens)
+      expect(visible.lastRequestContext).toContain("Last request context:")
+      expect(restored.sendMessage).not.toHaveBeenCalled()
+    },
+  )
+
   it.each(["notify", "ask", "ping"] as const)(
     "restores and persists %s events without redelivery",
     async (type) => {
@@ -349,6 +392,7 @@ describe("parent activity event bus", () => {
       version: 1,
       childId: child.id,
       sequence: 100,
+      lastRequestContextTokens: 202000,
       updatedAt: 100,
       state: "done",
     })
@@ -361,7 +405,9 @@ describe("parent activity event bus", () => {
     })
     await parent.tick()
     expect(parent.snapshots.at(-1)).toEqual({ activeCount: 0 })
+    expect((await parent.list())[0]?.lastRequestContextTokens).toBe(202000)
     await parent.execute("suba_resume", { id: launched.details.id, task: "more work" })
+    expect((await parent.list())[0]?.lastRequestContextTokens).toBe(202000)
     await parent.tick()
     expect(parent.snapshots.at(-1)).toEqual({ activeCount: 1 })
     await atomicWriteJson(join(artifactDir, "activity.json"), {
@@ -373,6 +419,7 @@ describe("parent activity event bus", () => {
     })
     await parent.tick()
     expect((await parent.list())[0]?.activity?.sequence).toBe(1)
+    expect((await parent.list())[0]?.lastRequestContextTokens).toBe(202000)
     expect(parent.snapshots.at(-1)).toEqual({ activeCount: 1 })
   })
 

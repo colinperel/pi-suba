@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { latestRequestContextTokens, requestContextTokens } from "../shared/context-tokens.ts"
 import type { ThinkingLevel } from "../shared/protocol.ts"
 import { ActivityRecorder } from "./activity.ts"
 import { EventWriter } from "./events.ts"
@@ -122,6 +123,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     await events.initialize()
+    await activity.update({
+      lastRequestContextTokens: latestRequestContextTokens(ctx.sessionManager.getBranch()),
+    })
     await activity.starting()
     if (ctx.model) await activity.selected(ctx.model.provider, ctx.model.id)
     await activity.thinking(ctx.thinkingLevel as ThinkingLevel)
@@ -138,6 +142,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_start", () => working(() => activity.model()))
   pi.on("turn_start", () => working(() => activity.model()))
   pi.on("before_provider_request", () => working(() => activity.model()))
+  pi.on("message_end", async (event) => {
+    const tokens = requestContextTokens(event.message)
+    if (tokens !== undefined) await activity.update({ lastRequestContextTokens: tokens })
+  })
   pi.on("message_update", () => working(() => activity.streaming()))
   pi.on("tool_execution_start", (event) => working(() => activity.tool(event.toolName)))
   pi.on("tool_execution_update", (event) => working(() => activity.tool(event.toolName)))

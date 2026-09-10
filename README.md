@@ -431,6 +431,21 @@ receives more input.
 If a child closes before recording completion, it is marked interrupted. Use `suba_resume` with its
 stable child ID to continue the same session with a new task.
 
+### Last-request context tokens
+
+Completion notifications and `suba_list` include the latest measured child
+request context, including cached input. The JSON field
+`lastRequestContextTokens` is the exact reported count; the accompanying label
+is `Last request context`. It is not cumulative usage or a prediction of the
+next request. Guidance, tool changes, or compaction can change the next size.
+
+The measurement uses Pi's normalized assistant usage: `input + cacheRead + cacheWrite`. Output tokens and the `cacheWrite1h` subset are not added. Missing,
+incomplete, or all-zero provider usage is unavailable, not a measured zero.
+If a later request has no usable measurement, the latest known one is retained.
+The value persists with child status and is reconstructed from the child
+session's active branch on resume. This is informational only, with no cost
+estimate, cutoff, or required status lookup.
+
 ### Inter-extension activity
 
 The parent extension emits `suba:activity` on `pi.events` with an unversioned

@@ -1,5 +1,6 @@
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Box, Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui"
+import { formatRequestContext } from "../shared/context-tokens.ts"
 import type { RegistryState } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
 import { guidanceColor } from "./style.ts"
@@ -17,10 +18,12 @@ export interface SubagentMessageDetails {
   model?: string
   thinking?: string
   elapsed?: number
+  lastRequestContextTokens?: number
   error?: string
 }
 
 export function resultBody(content: string): string {
+  content = content.replace(/^(Subagent[^\n]*)\nLast request context:[^\n]*/, "$1")
   const separator = content.indexOf("\n\n")
   if (separator >= 0) return content.slice(separator + 2).trimEnd()
   const prefix = content.match(/^Subagent\s+.+?\s+(?:failed|was interrupted[^:]*):?\s*/s)
@@ -149,6 +152,15 @@ export function renderSubagentMessage(
   const status = `${color(state.label)}${elapsed ? theme.fg("dim", ` · ${elapsed}`) : ""}`
   const header = `${color(state.glyph)} ${theme.fg("toolTitle", theme.bold(details.name ?? "subagent"))}  ${status}`
   container.addChild(new Text(header, 0, 0))
+
+  if (details.type === "result" || details.lastRequestContextTokens !== undefined)
+    container.addChild(
+      new Text(
+        theme.fg("dim", `  ${formatRequestContext(details.lastRequestContextTokens)}`),
+        0,
+        0,
+      ),
+    )
 
   const invocation = invocationDetails(details)
   if (invocation.length)

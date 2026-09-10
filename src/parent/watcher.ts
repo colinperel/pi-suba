@@ -52,7 +52,13 @@ export class ChildWatcher {
       if (!current()) return
       if (!record.activity || activity.sequence > record.activity.sequence) {
         freshWorking = activity.state === "working"
-        record = { ...record, activity, activityError: undefined }
+        record = {
+          ...record,
+          activity,
+          lastRequestContextTokens:
+            activity.lastRequestContextTokens ?? record.lastRequestContextTokens,
+          activityError: undefined,
+        }
         this.callbacks.activity(record)
       }
     } catch (error) {
@@ -119,6 +125,8 @@ export class ChildWatcher {
         record.state = result.error ? "failed" : "completed"
         record.error = result.error
         record.result = result.text
+        record.lastRequestContextTokens =
+          result.lastRequestContextTokens ?? record.lastRequestContextTokens
         const content = result.error
           ? `Subagent ${record.name} (${id}) failed: ${result.error}`
           : `Subagent ${record.name} (${id}) completed:\n\n${result.text ?? "(no assistant text)"}`
@@ -144,6 +152,8 @@ export class ChildWatcher {
         revision: record.revision + 1,
         state: failed ? ("failed" as const) : ("completed" as const),
         result: result.text,
+        lastRequestContextTokens:
+          result.lastRequestContextTokens ?? record.lastRequestContextTokens,
         error: result.error ?? (exitCode ? `Pi exited with status ${exitCode}` : undefined),
       }
       this.callbacks.update(next, {

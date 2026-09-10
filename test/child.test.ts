@@ -35,6 +35,37 @@ afterEach(async () => {
 })
 
 describe("child completion", () => {
+  it("reconstructs context on child resume and retains the latest measurement through completion", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-context-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_AUTO_COMPLETE = "1"
+    process.env.SUBA_CHILD_ID = "context"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    const handlers = new Map<string, Handler>()
+    childExtension({
+      registerTool() {},
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const message = (input: number) => ({
+      role: "assistant",
+      usage: { input, cacheRead: 100, cacheWrite: 20 },
+    })
+    const ctx = {
+      sessionManager: { getBranch: () => [{ type: "message", message: message(1000) }] },
+      shutdown() {},
+    } as unknown as ExtensionContext
+    const snapshot = () => readActivity(join(artifactDir, "activity.json"), "context")
+    await handlers.get("session_start")!({}, ctx)
+    expect((await snapshot()).lastRequestContextTokens).toBe(1120)
+    await handlers.get("message_end")!({ message: message(5) }, ctx)
+    await handlers.get("message_end")!({ message: { role: "assistant" } }, ctx)
+    await handlers.get("agent_settled")!({}, ctx)
+    expect((await snapshot()).lastRequestContextTokens).toBe(125)
+    expect((await snapshot()).state).toBe("done")
+  })
+
   it("keeps ping waiting and completion done through trailing tool events", async () => {
     const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-child-"))
     temporaryDirectories.push(artifactDir)

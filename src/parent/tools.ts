@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync } from "node:fs"
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { formatRequestContext } from "../shared/context-tokens.ts"
 import { agentDirectory, artifactDirectory } from "../shared/paths.ts"
 import { StringEnum } from "@earendil-works/pi-ai"
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -434,6 +435,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         lastEventSequence: resume?.lastEventSequence ?? 0,
         startedAt: Date.now(),
         resultAfterEntry,
+        lastRequestContextTokens: resume?.lastRequestContextTokens,
       }
       host.records.set(id, record)
       try {
@@ -678,6 +680,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           tmuxTarget: record.paneId,
           state: record.state,
           activity: record.activity,
+          lastRequestContextTokens: record.lastRequestContextTokens,
+          lastRequestContext: formatRequestContext(record.lastRequestContextTokens),
           model: record.activity?.model ?? record.resolvedLaunch.model,
           thinking: record.activity?.thinking ?? record.resolvedLaunch.thinking,
           elapsedMs: Date.now() - record.startedAt,
@@ -722,6 +726,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           activity,
           invocationLabel(record.model, record.thinking),
           formatElapsed(record.elapsedMs),
+          record.lastRequestContext,
         ]
           .filter(Boolean)
           .join(" · ")
