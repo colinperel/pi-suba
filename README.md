@@ -101,6 +101,19 @@ For work with shared context:
 2. Create the file before launching dependent children.
 3. Name the file and explain its purpose in each child's task.
 
+### Resume or start fresh
+
+When a follow-up arrives, resume the child when its accumulated knowledge is costly to
+reconstruct, such as an active implementation failure, a subtle continuation of an
+investigation, or retesting resources it created and owns. Prefer a fresh child, or parent
+execution when that matches the coordinator role, for a self-contained mechanical correction
+with a complete diagnosis or a different workstream.
+
+A completed task or phase boundary alone is not a reason to discard useful context. Reuse can
+preserve design rationale, rejected approaches, API discoveries, and resource ownership. A
+last-request context-token count, when available, is only a decision aid, not an exact cost
+estimate or an automatic cutoff. This guidance still applies when token metadata is unavailable.
+
 ## Parent tools
 
 | Tool          | Purpose                                               |
@@ -306,6 +319,16 @@ workstream that the parent will not also perform.
 Do not launch a child merely to duplicate the parent's analysis. Prefer fresh context and make each
 task self-contained. Use fork only when the required context cannot be captured in the task or in
 handoff files.
+
+# Resume or start fresh
+
+Resume a child when its accumulated knowledge is costly to reconstruct, such as an active
+implementation failure, a subtle continuation of an investigation, or retesting resources it
+created and owns. Prefer a fresh child, or parent execution when that matches the coordinator
+role, for a self-contained mechanical correction with a complete diagnosis or a different
+workstream. A completed task or phase boundary alone is not a reason to discard useful context.
+Treat the last-request context-token count, when available, as a decision aid rather than an exact
+cost estimate or automatic cutoff. Apply the same rule when token metadata is unavailable.
 
 # Subagent model selection
 
