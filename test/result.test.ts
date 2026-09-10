@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   collapsedCompletedResult,
   renderSubagentMessage,
@@ -36,6 +36,28 @@ describe("completed result rendering", () => {
       lines: ["# Finding", "first detail"],
       hidden: 1,
     })
+  })
+
+  it("uses muted amber for guidance and dims elapsed time", () => {
+    const fg = vi.fn((_color: string, text: string) => text)
+    const theme = {
+      fg,
+      bg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as never
+    const card = renderSubagentMessage(
+      "Subagent research needs guidance:\n\nWhich branch?",
+      { name: "research", state: "awaiting-parent", elapsed: 406_000 },
+      false,
+      "ctrl+o to expand",
+      theme,
+    )
+    const lines = card.render(80)
+    expect(lines[0]).toContain("\u001b[38;2;201;166;107m?")
+    expect(lines[0]).toContain("\u001b[38;2;201;166;107mneeds guidance\u001b[39m")
+    expect(fg).toHaveBeenCalledWith("dim", " · 6m46s")
+    expect(fg.mock.calls.some(([color]) => color === "warning")).toBe(false)
+    expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true)
   })
 
   it("renders a compact width-safe completion card", () => {

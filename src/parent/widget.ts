@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui"
 import type { ChildRecord } from "./registry.ts"
+import { guidanceColor } from "./style.ts"
 
 type Theme = ExtensionContext["ui"]["theme"]
 
@@ -129,11 +130,13 @@ export class ActivityWidget implements Component {
     const lines = [headerLine(projection.activeCount, width, this.theme)]
     const innerWidth = Math.max(0, width - 2)
     for (const item of projection.items) {
-      const glyph =
-        item.state === "waiting" ? this.theme.fg("warning", "?") : this.theme.fg("accent", "●")
-      const activityTone = item.state === "waiting" ? "warning" : "dim"
+      const glyph = item.state === "waiting" ? guidanceColor("?") : this.theme.fg("accent", "●")
+      const activity =
+        item.state === "waiting"
+          ? guidanceColor(`· ${item.activity}`)
+          : this.theme.fg("dim", `· ${item.activity}`)
       const badge = item.worktree ? ` ${this.theme.fg("dim", "")}` : ""
-      const left = ` ${glyph} ${this.theme.bold(item.name)}${badge} ${this.theme.fg(activityTone, `· ${item.activity}`)}`
+      const left = ` ${glyph} ${this.theme.bold(item.name)}${badge} ${activity}`
       const detailParts =
         innerWidth >= 52 ? [item.model, item.thinking, item.elapsed] : [item.elapsed]
       const right = this.theme.fg("dim", `${detailParts.join(" · ")} `)

@@ -2,6 +2,7 @@ import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-codi
 import { Box, Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui"
 import type { RegistryState } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
+import { guidanceColor } from "./style.ts"
 
 type Theme = ExtensionContext["ui"]["theme"]
 
@@ -132,8 +133,12 @@ export function renderSubagentMessage(
   const state = presentation(details.state)
   const container = new Container()
   const elapsed = details.elapsed === undefined ? undefined : formatElapsed(details.elapsed)
-  const status = [state.label, elapsed].filter(Boolean).join(" · ")
-  const header = `${theme.fg(state.tone, state.glyph)} ${theme.fg("toolTitle", theme.bold(details.name ?? "subagent"))}  ${theme.fg(state.tone, status)}`
+  const color =
+    details.state === "awaiting-parent"
+      ? guidanceColor
+      : (text: string) => theme.fg(state.tone, text)
+  const status = `${color(state.label)}${elapsed ? theme.fg("dim", ` · ${elapsed}`) : ""}`
+  const header = `${color(state.glyph)} ${theme.fg("toolTitle", theme.bold(details.name ?? "subagent"))}  ${status}`
   container.addChild(new Text(header, 0, 0))
 
   const invocation = invocationDetails(details)
