@@ -111,6 +111,7 @@ export default async function (pi: ExtensionAPI) {
               lastRequestContextTokens: record.lastRequestContextTokens,
               elapsed: Date.now() - record.startedAt,
               error: record.error,
+              report: record.report,
             } satisfies SubagentMessageDetails,
           },
           { deliverAs: "steer", triggerTurn: true },

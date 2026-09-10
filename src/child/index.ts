@@ -1,7 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { latestRequestContextTokens, requestContextTokens } from "../shared/context-tokens.ts"
-import type { ThinkingLevel } from "../shared/protocol.ts"
+import {
+  validateCompletionReport,
+  type CompletionReport,
+  type ThinkingLevel,
+} from "../shared/protocol.ts"
 import { ActivityRecorder } from "./activity.ts"
 import { EventWriter } from "./events.ts"
 
@@ -43,13 +47,13 @@ export default function (pi: ExtensionAPI) {
         /\boperation was aborted\b/i.test(message.errorMessage ?? ""))
     )
   }
-  const finish = async (ctx: ExtensionContext, explicit = false): Promise<boolean> => {
+  const finish = async (ctx: ExtensionContext, report?: CompletionReport): Promise<boolean> => {
     if (lifecycle !== "running") return false
     lifecycle = "completing"
     try {
-      const error = explicit ? undefined : latestAssistantError(ctx)
+      const error = report ? undefined : latestAssistantError(ctx)
       if (error) await events.failed(error)
-      else await events.completed()
+      else await events.completed(report)
     } catch (error) {
       lifecycle = "running"
       throw error
@@ -64,14 +68,27 @@ export default function (pi: ExtensionAPI) {
     name: "suba_done",
     label: "Suba Done",
     description:
-      "Finish this delegated task immediately. The latest assistant text becomes the parent result.",
-    parameters: Type.Object({}),
-    async execute(_id, _params, _signal, _update, ctx) {
-      if (!(await finish(ctx, true)))
+      "Finish immediately with the supplied nonempty summary and optional artifact path references. No preceding assistant prose is needed. Artifacts are not read or executed; completion does not mean parent acceptance.",
+    parameters: Type.Object({
+      summary: Type.String({
+        minLength: 1,
+        pattern: "\\S",
+        description: "Final report delivered verbatim to the parent",
+      }),
+      artifacts: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, pattern: "\\S" }), {
+          description:
+            "Artifact path references, relative to the child working directory or absolute. Contents are not ingested.",
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _update, ctx) {
+      validateCompletionReport(params)
+      if (!(await finish(ctx, params)))
         throw new Error(`suba_done is unavailable while lifecycle is ${lifecycle}`)
       return {
         content: [{ type: "text", text: "Subagent completion recorded. Shutting down." }],
-        details: {},
+        details: params,
         terminate: true,
       }
     },

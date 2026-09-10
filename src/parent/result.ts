@@ -1,6 +1,7 @@
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Box, Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui"
 import { formatRequestContext } from "../shared/context-tokens.ts"
+import { completionReportText, type CompletionReport } from "../shared/protocol.ts"
 import type { RegistryState } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
 import { guidanceColor } from "./style.ts"
@@ -19,6 +20,7 @@ export interface SubagentMessageDetails {
   thinking?: string
   elapsed?: number
   lastRequestContextTokens?: number
+  report?: CompletionReport
   error?: string
 }
 
@@ -167,7 +169,7 @@ export function renderSubagentMessage(
     container.addChild(new Text(theme.fg("dim", `  ${invocation.join(" · ")}`), 0, 0))
 
   const body =
-    resultBody(content) ||
+    (details.report ? completionReportText(details.report) : resultBody(content)) ||
     details.error ||
     (details.state === "completed" ? "(no assistant text)" : content)
   if (expanded) {
@@ -179,7 +181,10 @@ export function renderSubagentMessage(
       container.addChild(metadata)
     }
   } else {
-    const preview = resultPreview(body, details.state === "awaiting-parent" ? 3 : 2)
+    const preview = resultPreview(
+      `Subagent result:\n\n${body}`,
+      details.state === "awaiting-parent" ? 3 : 2,
+    )
     if (preview.lines.length) {
       container.addChild(new Spacer(1))
       container.addChild(

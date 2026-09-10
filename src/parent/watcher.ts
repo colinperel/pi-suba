@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { readActivity, readEvents, type ChildEvent } from "../shared/protocol.ts"
+import {
+  completionReportText,
+  readActivity,
+  readEvents,
+  type ChildEvent,
+} from "../shared/protocol.ts"
 import { extractResult } from "../shared/sessions.ts"
 import { paneExists } from "../shared/tmux.ts"
 import type { ChildRecord } from "./registry.ts"
@@ -117,19 +122,22 @@ export class ChildWatcher {
           content: `Subagent ${record.name} (${id}) failed: ${event.error}`,
         })
         return
-      } else {
+      } else if (event.type === "completed") {
         // The event revision is local until the result has been read.
         const stored = this.callbacks.get(id)
-        const result = await extractResult(record.sessionFile, record.resultAfterEntry)
+        const result = event.report
+          ? { text: event.report.summary, error: undefined, lastRequestContextTokens: undefined }
+          : await extractResult(record.sessionFile, record.resultAfterEntry)
         if (generation !== this.generation || this.callbacks.get(id) !== stored) return
         record.state = result.error ? "failed" : "completed"
         record.error = result.error
         record.result = result.text
+        record.report = event.report
         record.lastRequestContextTokens =
           result.lastRequestContextTokens ?? record.lastRequestContextTokens
         const content = result.error
           ? `Subagent ${record.name} (${id}) failed: ${result.error}`
-          : `Subagent ${record.name} (${id}) completed:\n\n${result.text ?? "(no assistant text)"}`
+          : `Subagent ${record.name} (${id}) completed:\n\n${event.report ? completionReportText(event.report) : (result.text ?? "(no assistant text)")}`
         this.callbacks.update(record, { type: "result", content })
         return
       }

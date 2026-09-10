@@ -35,6 +35,53 @@ afterEach(async () => {
 })
 
 describe("child completion", () => {
+  it.each([
+    { summary: "  Exact report.\n\nSecond paragraph.  " },
+    { summary: "Report", artifacts: ["missing/evidence.md", "/tmp/report file.md"] },
+  ])("persists explicit completion without preceding prose: %j", async (report) => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-explicit-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "explicit"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on() {},
+    } as unknown as ExtensionAPI)
+    let shutdowns = 0
+    const ctx = {
+      sessionManager: {
+        getBranch() {
+          throw new Error("must not extract prose")
+        },
+      },
+      shutdown() {
+        shutdowns++
+      },
+    } as unknown as ExtensionContext
+    const execute = (params: Record<string, unknown>) =>
+      tools.get("suba_done")!.execute("call", params, new AbortController().signal, () => {}, ctx)
+    for (const invalid of [
+      {},
+      { summary: "" },
+      { summary: " \n\t" },
+      { summary: 42 },
+      { summary: "ok", artifacts: [""] },
+      { summary: "ok", artifacts: "path" },
+    ]) {
+      await expect(execute(invalid)).rejects.toThrow(/suba_done/)
+      expect(await readEvents(artifactDir, 0)).toEqual([])
+      expect(shutdowns).toBe(0)
+    }
+    expect((await execute(report)).terminate).toBe(true)
+    expect(await readEvents(artifactDir, 0)).toMatchObject([
+      { type: "completed", sequence: 1, report },
+    ])
+    expect(shutdowns).toBe(1)
+  })
+
   it("reconstructs context on child resume and retains the latest measurement through completion", async () => {
     const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-context-"))
     temporaryDirectories.push(artifactDir)
@@ -104,7 +151,7 @@ describe("child completion", () => {
     expect((await snapshot()).state).toBe("working")
     await tools
       .get("suba_done")!
-      .execute("call", {}, new AbortController().signal, () => undefined, ctx)
+      .execute("call", { summary: "done" }, new AbortController().signal, () => undefined, ctx)
     await trailingEvents()
     expect((await snapshot()).state).toBe("done")
     expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual([
@@ -148,7 +195,7 @@ describe("child completion", () => {
     expect((await snapshot()).state).toBe("working")
     await tools
       .get("suba_done")!
-      .execute("call", {}, new AbortController().signal, () => undefined, ctx)
+      .execute("call", { summary: "done" }, new AbortController().signal, () => undefined, ctx)
     await trailingEvents()
     expect((await snapshot()).state).toBe("done")
     expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual([
@@ -196,7 +243,7 @@ describe("child completion", () => {
     expect(await snapshot()).toMatchObject({ state: "working", activity: "model" })
     await tools
       .get("suba_done")
-      ?.execute("call", {}, new AbortController().signal, () => undefined, ctx)
+      ?.execute("call", { summary: "done" }, new AbortController().signal, () => undefined, ctx)
     await handlers.get("agent_settled")?.({}, ctx)
     expect((await snapshot()).state).toBe("done")
     expect(shutdowns).toBe(1)
@@ -240,7 +287,7 @@ describe("child completion", () => {
     await mkdir(join(artifactDir, "events"))
     const result = await tools
       .get("suba_done")
-      ?.execute("call", {}, new AbortController().signal, () => undefined, ctx)
+      ?.execute("call", { summary: "done" }, new AbortController().signal, () => undefined, ctx)
 
     expect(result?.terminate).toBe(true)
     expect(shutdowns).toBe(1)

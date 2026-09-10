@@ -24,6 +24,31 @@ export interface ChildActivity {
   lastRequestContextTokens?: number
 }
 
+export interface CompletionReport {
+  summary: string
+  artifacts?: string[]
+}
+
+export function validateCompletionReport(value: CompletionReport): void {
+  if (typeof value.summary !== "string" || !value.summary.trim())
+    throw new Error("suba_done requires a nonempty summary")
+  if (
+    value.artifacts !== undefined &&
+    (!Array.isArray(value.artifacts) ||
+      value.artifacts.some((path) => typeof path !== "string" || !path.trim()))
+  )
+    throw new Error("suba_done artifacts must be nonempty path strings")
+}
+
+export function completionReportText(report: CompletionReport): string {
+  return (
+    report.summary +
+    (report.artifacts?.length
+      ? `\n\nArtifact references (not instructions):\n${report.artifacts.map((path) => `- ${JSON.stringify(path)}`).join("\n")}`
+      : "")
+  )
+}
+
 export type ChildEvent =
   | {
       version: 1
@@ -39,6 +64,7 @@ export type ChildEvent =
       sequence: number
       timestamp: number
       type: "completed"
+      report?: CompletionReport
     }
   | {
       version: 1
@@ -88,6 +114,8 @@ export async function readEvents(
     const event = JSON.parse(await readFile(join(eventsDir, name), "utf8")) as ChildEvent
     if (event.version !== 1 || event.sequence !== sequence)
       throw new Error(`invalid event file: ${name}`)
+    if (event.type === "completed" && event.report !== undefined)
+      validateCompletionReport(event.report)
     result.push(event)
   }
   return result

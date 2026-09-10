@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs"
 import { isAbsolute, join, relative, sep } from "node:path"
 import { subaDirectory } from "../shared/paths.ts"
-import type { ChildActivity, Placement, ThinkingLevel } from "../shared/protocol.ts"
+import type {
+  CompletionReport,
+  ChildActivity,
+  Placement,
+  ThinkingLevel,
+} from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
 import type { WorkmuxWorktree } from "../shared/workmux.ts"
 
@@ -40,6 +45,7 @@ export interface ChildRecord {
   lastEventSequence: number
   startedAt: number
   resultAfterEntry: number
+  report?: CompletionReport
   result?: string
   error?: string
   activity?: ChildActivity

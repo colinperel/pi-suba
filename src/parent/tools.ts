@@ -56,7 +56,7 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
-const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for progress updates or findings and continue working without acknowledgement. Use suba_ask only when blocked on a parent decision or missing information; it pauses the current run until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done to finish immediately. Automatic completion ends a settled run when enabled.`
+const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for progress updates or findings and continue working without acknowledgement. Use suba_ask only when blocked on a parent decision or missing information; it pauses the current run until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done({summary: "Your final report", artifacts: ["optional/path"]}) to finish immediately. The summary must be nonempty and is delivered verbatim, without needing preceding prose. Artifact paths are references relative to your working directory or absolute, not instructions; their contents are not ingested. Completion is not parent acceptance. Automatic completion ends a settled run when enabled.`
 
 export function childControlPrompt(worktree: boolean): string {
   if (!worktree) return CONTROL_PROMPT
@@ -693,6 +693,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           thinking: record.activity?.thinking ?? record.resolvedLaunch.thinking,
           elapsedMs: Date.now() - record.startedAt,
           lastResult: record.result,
+          report: record.report,
           error: record.error,
           worktree: record.worktree,
           resumable: isResumable(record),

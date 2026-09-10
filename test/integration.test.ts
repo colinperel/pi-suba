@@ -30,9 +30,9 @@ describe.skipIf(!model)("real Pi integration", () => {
       await exec("tmux", ["-L", socket, "kill-server"])
     } catch {}
   })
-  it(
-    "runs a persistent interactive child through automatic completion",
-    async () => {
+  it.each([false, true])(
+    "runs a persistent interactive child through completion (explicit=%s)",
+    async (explicit) => {
       await exec("tmux", ["-V"])
       const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-real-"))
       const sessionFile = join(artifactDir, "session.jsonl")
@@ -41,7 +41,7 @@ describe.skipIf(!model)("real Pi integration", () => {
       const command = [
         `SUBA_CHILD_ID=realtest`,
         `SUBA_ARTIFACT_DIR=${quote(artifactDir)}`,
-        `SUBA_AUTO_COMPLETE=1`,
+        `SUBA_AUTO_COMPLETE=${explicit ? "0" : "1"}`,
         "pi",
         "--no-extensions",
         "-e",
@@ -54,7 +54,11 @@ describe.skipIf(!model)("real Pi integration", () => {
         quote(sessionFile),
         "--model",
         quote(model!),
-        quote("Reply with exactly: pi-suba integration ok"),
+        quote(
+          explicit
+            ? 'Call suba_done immediately with summary "pi-suba explicit integration ok" and artifacts ["missing/evidence.md"]. Do not emit any prose before the tool call.'
+            : "Reply with exactly: pi-suba integration ok",
+        ),
       ].join(" ")
       await exec("tmux", ["-L", socket, "new-session", "-d", "-s", "real", command])
       await waitForCompletion(artifactDir)
@@ -64,9 +68,19 @@ describe.skipIf(!model)("real Pi integration", () => {
         .lastRequestContextTokens
       expect(measured).toBeGreaterThan(0)
       expect((await extractResult(sessionFile)).lastRequestContextTokens).toBe(measured)
-      expect((await extractResult(sessionFile)).text?.toLowerCase()).toContain(
-        "pi-suba integration ok",
-      )
+      if (explicit) {
+        expect(events.at(-1)).toMatchObject({
+          type: "completed",
+          report: {
+            summary: "pi-suba explicit integration ok",
+            artifacts: ["missing/evidence.md"],
+          },
+        })
+        expect((await extractResult(sessionFile)).text).toBeUndefined()
+      } else
+        expect((await extractResult(sessionFile)).text?.toLowerCase()).toContain(
+          "pi-suba integration ok",
+        )
       const activity = await readActivity(join(artifactDir, "activity.json"), "realtest")
       expect(activity.state).toBe("done")
       expect(activity.model).toBeTruthy()

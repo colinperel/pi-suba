@@ -218,11 +218,34 @@ command while preserving both errors.
 
 Every child receives three control tools in addition to its profile's tools:
 
-| Tool        | Purpose                                                 |
-| ----------- | ------------------------------------------------------- |
-| `suba_done` | Finish immediately and return the latest assistant text |
-| `suba_notify` | Send an update and continue working without acknowledgement |
-| `suba_ask` | Ask for a decision or missing information only when blocked |
+| Tool          | Purpose                                                               |
+| ------------- | --------------------------------------------------------------------- |
+| `suba_done`   | Finish immediately with a required summary and optional artifact paths |
+| `suba_notify` | Send an update and continue working without acknowledgement            |
+| `suba_ask`    | Ask for a decision or missing information only when blocked            |
+
+Explicit completion needs no preceding assistant prose:
+
+```js
+suba_done({
+  summary: "Implemented the adapter. Focused tests passed.",
+  artifacts: ["history/2026-09-10-adapter-evidence.md"],
+})
+```
+
+`summary` must contain non-whitespace text and is retained verbatim. `artifacts`
+is optional and contains nonempty path strings, relative to the child's working
+directory or absolute. Paths are retained as supplied and delivered as references,
+not instructions. Files are not checked, read, or executed. Completion reports are
+persisted in completion events and the parent session, including artifact paths;
+completion does not imply parent verification or acceptance.
+
+Compatibility: new and resumed children reject empty-argument `suba_done({})`
+calls. Supply a summary instead; no earlier progress text is substituted. Historical
+stored completion events without a report remain readable and retain the legacy
+assistant-text extraction behavior. Existing parent records remain restorable.
+Automatic completion of ordinary final answers is unchanged. Parents must run the
+updated extension to consume explicit reports from updated children.
 
 When a child calls `suba_ask`, it enters an awaiting-parent state. The parent receives the question
 and can answer with `suba_send`. You can also focus the child's tmux pane and type directly into it.

@@ -1,3 +1,4 @@
+import { initTheme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -9,6 +10,39 @@ import {
 } from "../src/parent/result.ts"
 
 describe("completed result rendering", () => {
+  initTheme("dark", false)
+  it.each([false, true])(
+    "renders explicit report instead of stale content (expanded=%s)",
+    (expanded) => {
+      const theme = {
+        fg: (_color: string, text: string) => text,
+        bg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      } as never
+      const lines = renderSubagentMessage(
+        "Subagent worker completed:\n\nstale prose",
+        {
+          type: "result",
+          state: "completed",
+          report: {
+            summary: "Subagent findings\n\nFinal paragraph",
+            artifacts: ["missing/evidence.md"],
+          },
+        },
+        expanded,
+        "expand",
+        theme,
+      ).render(80)
+      const text = lines.join("\n")
+      expect(text).toContain("Subagent findings")
+      expect(text).toContain("Final paragraph")
+      expect(text).not.toContain("stale prose")
+      if (expanded) expect(text).toContain("missing/evidence.md")
+      else expect(text).toContain("more")
+      expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true)
+    },
+  )
+
   it("keeps context metadata out of result previews and renders it on collapsed cards", () => {
     const content =
       "Subagent worker (abc) completed:\nLast request context: 202,000 tokens, including cached input\n\nfinished"

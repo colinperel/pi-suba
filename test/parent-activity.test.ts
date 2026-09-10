@@ -146,6 +146,44 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
 }
 
 describe("parent activity event bus", () => {
+  it.each([undefined, ["missing/report.md"]])(
+    "persists and sends explicit reports with artifacts %j",
+    async (artifacts) => {
+      const child = await record("explicit")
+      const report = {
+        summary: "  Exact report.\n\nSecond paragraph.  ",
+        ...(artifacts ? { artifacts } : {}),
+      }
+      await writeEvent(child.artifactDir, {
+        version: 1,
+        childId: child.id,
+        sequence: 1,
+        timestamp: 1,
+        type: "completed",
+        report,
+      })
+      const parent = await harness([child])
+      await parent.emit("session_start")
+      expect(parent.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display: true,
+          content: expect.stringContaining(`\n\n${report.summary}`),
+          details: expect.objectContaining({ report, state: "completed" }),
+        }),
+        { deliverAs: "steer", triggerTurn: true },
+      )
+      if (artifacts)
+        expect(parent.sendMessage.mock.calls[0]![0].content).toContain('"missing/report.md"')
+      const persisted = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+      expect(persisted.report).toEqual(report)
+      expect(persisted.result).toBe(report.summary)
+      const restored = await harness([JSON.parse(JSON.stringify(persisted))])
+      await restored.emit("session_start")
+      expect((await restored.list())[0]!.report).toEqual(report)
+      expect(restored.sendMessage).not.toHaveBeenCalled()
+    },
+  )
+
   it.each([202000, undefined])(
     "exposes completion context %s and restores it before resume",
     async (tokens) => {

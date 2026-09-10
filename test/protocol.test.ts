@@ -5,6 +5,24 @@ import { describe, expect, it } from "vitest"
 import { atomicWriteJson, readActivity, readEvents, writeEvent } from "../src/shared/protocol.ts"
 
 describe("artifact protocol", () => {
+  it.each([
+    { summary: "" },
+    { summary: " \n" },
+    { artifacts: ["a"] },
+    { summary: "ok", artifacts: [42] },
+  ])("rejects malformed stored reports without legacy fallback: %j", async (report) => {
+    const dir = await mkdtemp(join(tmpdir(), "suba-invalid-report-"))
+    await atomicWriteJson(join(dir, "events", "000001-completed.json"), {
+      version: 1,
+      childId: "abc",
+      sequence: 1,
+      timestamp: 1,
+      type: "completed",
+      report,
+    })
+    await expect(readEvents(dir, 0)).rejects.toThrow(/suba_done/)
+  })
+
   it("atomically replaces activity and validates identity", async () => {
     const dir = await mkdtemp(join(tmpdir(), "suba-protocol-"))
     const path = join(dir, "activity.json")

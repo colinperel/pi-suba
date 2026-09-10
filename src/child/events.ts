@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises"
 import { join } from "node:path"
-import { writeEvent, type ChildEvent } from "../shared/protocol.ts"
+import { writeEvent, type CompletionReport, type ChildEvent } from "../shared/protocol.ts"
 
 export class EventWriter {
   private sequence = 0
@@ -22,7 +22,7 @@ export class EventWriter {
   private async emit(
     event:
       | { type: "ask" | "notify"; message: string }
-      | { type: "completed" }
+      | { type: "completed"; report?: CompletionReport }
       | { type: "failed"; error: string },
   ): Promise<void> {
     this.sequence += 1
@@ -40,8 +40,8 @@ export class EventWriter {
   notify(message: string): Promise<void> {
     return this.emit({ type: "notify", message })
   }
-  completed(): Promise<void> {
-    return this.emit({ type: "completed" })
+  completed(report?: CompletionReport): Promise<void> {
+    return this.emit({ type: "completed", ...(report ? { report } : {}) })
   }
   failed(error: string): Promise<void> {
     return this.emit({ type: "failed", error })
