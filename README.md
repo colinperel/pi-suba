@@ -87,21 +87,23 @@ parent should never sleep or repeatedly poll for completion.
 
 ## Delegation and context
 
-Children use fresh context by default. A fresh child receives the task, but not the parent
-conversation. Make the assignment self-contained or name accessible authoritative references that contain the
-required context. Reference authoritative tasks with repository and workspace context and commands
-a fresh child can use to read them (for example, `aven context REF` and `aven show REF --full`). Put
-temporary coordination in the launch prompt; create handoffs only for additional reusable context.
+Children use fresh context by default and receive no parent conversation. Prefer fresh context
+for self-contained tasks and parallel children with separate scopes, especially when they can
+modify files. Supply the required context in the task or point to accessible authoritative sources
+instead of copying them into a handoff.
 
-Use `context: "fork"` only when the task depends on conversation history that cannot be captured
-cleanly in the assignment or handoff files. Forking copies the parent branch up to, but not
-including, the latest user message.
+For an existing task, name its repository, workspace, reference, and commands to read it. For
+example, an Aven assignment can give the task reference and workspace with `aven context REF` and
+`aven show REF --full` as read commands. A reference without enough information to find and read
+it is not self-contained.
 
-For work with shared context:
+Put temporary coordination in the launch prompt. Create a handoff only for reusable context not
+already available from those sources, such as a shared design decision or cross-task constraint.
+Create it before launching dependent children, and name the file and its purpose in their tasks.
 
-1. Write the context to a handoff file.
-2. Create the file before launching dependent children.
-3. Name the file and explain its purpose in each child's task.
+Use `context: "fork"` only when essential conversation history cannot be supplied in the task or
+referenced material. Forking copies the parent branch up to, but not including, the latest user
+message. Inherited history is background; the latest assignment defines the child's scope.
 
 ### Resume or start fresh
 
@@ -112,9 +114,9 @@ execution when that matches the coordinator role, for a self-contained mechanica
 with a complete diagnosis or a different workstream.
 
 A completed task or phase boundary alone is not a reason to discard useful context. Reuse can
-preserve design rationale, rejected approaches, API discoveries, and resource ownership. A
-last-request context-token count, when available, is only a decision aid, not an exact cost
-estimate or an automatic cutoff. This guidance still applies when token metadata is unavailable.
+preserve design rationale, rejected approaches, API discoveries, and resource ownership. Treat
+[last-request context tokens](#last-request-context-tokens) as a decision aid, not an exact cost
+estimate or automatic cutoff. Apply the same judgment when token metadata is unavailable.
 
 ## Parent tools
 
@@ -173,10 +175,12 @@ does not create a workmux-managed session, window, pane, layout, or pane command
 Pi-suba launches the child in the effective working directory returned by
 workmux.
 
-The parent authorizes merges one at a time. Ensure the child profile has
-`load-skills: true` and the `merge` skill is installed in its Pi environment. When
-ready to integrate, send the skill command with completion instructions appended
-after a space, not a newline, so they accompany the expanded skill:
+The child owns implementation, validation, and commits within its assigned
+scope, without seeking approval for each step. Integration remains a parent
+boundary: the parent authorizes merges one at a time. Ensure the child profile
+has `load-skills: true` and the `merge` skill is installed in its Pi environment.
+When ready to integrate, send the skill command with completion instructions
+appended after a space, not a newline, so they accompany the expanded skill:
 
 ```json
 {
@@ -329,40 +333,43 @@ Configuration and profiles are read when the parent session starts.
 
 ### `instructions.md`
 
-`~/.pi/agent/suba/instructions.md` is appended to the parent system prompt. It is user policy rather than
-required extension configuration. Use it to describe when delegation is appropriate, which context
-style to prefer, and how the parent should select profiles or models.
+`~/.pi/agent/suba/instructions.md` is appended to the parent system prompt. It is user policy, not
+required configuration. Keep it to delegation decisions and model routing; the sections on
+[context](#delegation-and-context) and [worktree integration](#worktree-launches) provide examples
+and operational details.
 
 This is a reasonable starting point:
 
 ```markdown
 # Subagent delegation
 
-Use subagents when the user explicitly requests delegation or when a task has a clearly independent
-workstream that the parent will not also perform.
+Use suba for explicit delegation requests or a separate workstream the parent
+will not also perform, not merely for second opinions, self-review, or
+validation. Keep single-target reviews and investigations with the parent
+unless the user requests delegated review. Use an active skill's specified
+consultation mechanism.
 
-Do not launch a child merely to duplicate the parent's analysis. Prefer fresh context and make each
-task self-contained. Use fork only when the required context cannot be captured in the task or in
-handoff files.
+Use fresh context with a self-contained task or authoritative references,
+repository/workspace context, and commands to read them. Put temporary
+coordination in the launch prompt; use handoffs only for additional reusable
+context. Fork only when essential conversation history cannot be supplied this
+way. The latest assignment defines scope; inherited history is background.
 
-Delegate outcomes, not steps. Give each child clear ownership and enough authority to finish.
-Require approval only when it must cross an ownership boundary, change an agreed contract, or
-exceed authorization.
+Resume when accumulated knowledge is costly to reconstruct. Prefer a fresh
+child, or parent execution when its role permits, for a self-contained, fully
+diagnosed mechanical correction or a different workstream. Completion or phase
+boundaries alone do not justify restarting. Last-request context-token counts,
+when available, are a decision aid, not a cutoff.
 
-# Resume or start fresh
-
-Resume a child when its accumulated knowledge is costly to reconstruct, such as an active
-implementation failure, a subtle continuation of an investigation, or retesting resources it
-created and owns. Prefer a fresh child, or parent execution when that matches the coordinator
-role, for a self-contained mechanical correction with a complete diagnosis or a different
-workstream. A completed task or phase boundary alone is not a reason to discard useful context.
-Treat the last-request context-token count, when available, as a decision aid rather than an exact
-cost estimate or automatic cutoff. Apply the same rule when token metadata is unavailable.
+Delegate outcomes, not steps, with clear scope and authority. Require approval
+only to cross ownership boundaries, change agreed contracts, or exceed
+authorization. Worktree merges require parent approval and verification before
+`suba_finish`.
 
 # Subagent model selection
 
-Use the configured model and thinking defaults unless a different available model is a better fit
-for the delegated task.
+Use configured model and thinking defaults unless another available model
+better fits the task.
 ```
 
 Replace the model-selection paragraph with concrete model and thinking guidance when you want the
