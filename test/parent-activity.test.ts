@@ -423,6 +423,35 @@ describe("parent activity event bus", () => {
     expect(parent.snapshots.at(-1)).toEqual({ activeCount: 1 })
   })
 
+  it("explains terminal children when guidance cannot be delivered", async () => {
+    const result = "A".repeat(300)
+    const completed = await record("done", { state: "completed", result })
+    const empty = await record("empty", { state: "completed", paneId: undefined })
+    const failed = await record("failed", { state: "failed", error: "child crashed" })
+    const interrupted = await record("interrupted", { state: "interrupted", paneId: undefined })
+    const parent = await harness([completed, empty, failed, interrupted])
+    await parent.emit("session_start")
+    await expect(parent.execute("suba_send", { id: "done", message: "late" })).rejects.toThrow(
+      "done (done) is completed. Your message was not delivered.\nLatest result: " +
+        "A".repeat(240),
+    )
+    await expect(parent.execute("suba_send", { id: "empty", message: "late" })).rejects.toThrow(
+      "empty (empty) is completed. Your message was not delivered.\nUse suba_resume with this child ID",
+    )
+    await expect(parent.execute("suba_send", { id: "failed", message: "late" })).rejects.toThrow(
+      "failed (failed) is failed. Your message was not delivered.\nLatest failure: child crashed\nUse suba_resume with this child ID",
+    )
+    await expect(
+      parent.execute("suba_send", { id: "interrupted", message: "late" }),
+    ).rejects.toThrow(
+      "interrupted (interrupted) is interrupted. Your message was not delivered.\nUse suba_resume with this child ID",
+    )
+    await expect(parent.execute("suba_send", { id: "missing", message: "late" })).rejects.toThrow(
+      "Unknown subagent missing; no message was delivered.",
+    )
+    expect(sendToPane).not.toHaveBeenCalled()
+  })
+
   it("does not resurrect a child that finishes while guidance is being sent", async () => {
     const child = await record("send", { state: "awaiting-parent" })
     await activity(child, "waiting")

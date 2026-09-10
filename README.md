@@ -431,6 +431,11 @@ receives more input.
 If a child closes before recording completion, it is marked interrupted. Use `suba_resume` with its
 stable child ID to continue the same session with a new task.
 
+`suba_send` delivers only to live children. If a known child has already reached a terminal state,
+its failed response says the message was not delivered, includes the bounded latest result or failure
+when available, and gives the stable ID for `suba_resume`. An unknown ID is reported separately and
+is not presented as resumable. A failed send never resumes a child automatically.
+
 ### Last-request context tokens
 
 Completion notifications and `suba_list` include the latest measured child

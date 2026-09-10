@@ -531,12 +531,19 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_send",
     label: "Suba Send",
     description:
-      "Send guidance to a live subagent by stable child ID. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
+      "Send guidance to a live subagent by stable child ID. If the child is terminal, the failure includes its state and latest result or error, with suba_resume guidance. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_call, params) {
       const record = host.records.get(params.id)
-      if (!record || !isLive(record) || !record.paneId)
-        throw new Error(`Subagent ${params.id} is not live`)
+      if (!record) throw new Error(`Unknown subagent ${params.id}; no message was delivered.`)
+      if (!isLive(record) || !record.paneId) {
+        const detail = record.error || record.result
+        const bounded = detail?.replace(/\s+/g, " ").trim().slice(0, 240)
+        const suffix = bounded ? `\nLatest ${record.error ? "failure" : "result"}: ${bounded}` : ""
+        throw new Error(
+          `${record.name} (${record.id}) is ${record.state}. Your message was not delivered.${suffix}\nUse suba_resume with this child ID if further work is required.`,
+        )
+      }
       await sendToPane(record.paneId, params.message)
       const latest = host.records.get(params.id)
       const running =
