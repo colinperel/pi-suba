@@ -92,8 +92,6 @@ conversation. Make the assignment self-contained or name accessible authoritativ
 required context. Reference authoritative tasks with repository and workspace context and commands
 a fresh child can use to read them (for example, `aven context REF` and `aven show REF --full`). Put
 temporary coordination in the launch prompt; create handoffs only for additional reusable context.
-After completion, remove only owned disposable handoffs no active child needs, preserving useful
-decisions, evidence, and unresolved findings in tasks or established docs. Never sweep history.
 
 Use `context: "fork"` only when the task depends on conversation history that cannot be captured
 cleanly in the assignment or handoff files. Forking copies the parent branch up to, but not
