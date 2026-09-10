@@ -8,7 +8,7 @@ stable child ID shown by the parent.
 ### Fresh split completion
 
 ```text
-Call suba exactly once with name "fresh", task "[fake:complete] fresh split", context "fresh", and split placement. Do not call suba_list.
+Call suba exactly once with name "fresh", task "[fake:complete] fresh split", context "fresh". Do not call suba_list.
 ```
 
 ### Fork completion
@@ -16,17 +16,20 @@ Call suba exactly once with name "fresh", task "[fake:complete] fresh split", co
 First establish a unique conversation fact, then send:
 
 ```text
-Call suba exactly once with name "fork", task "[fake:complete] fork context", context "fork", and split placement.
+Call suba exactly once with name "fork", task "[fake:complete] fork context", context "fork".
 ```
 
 Inspect the child session to confirm that conversation entries before the
 triggering user turn exist and the triggering turn does not.
 
-### Dedicated and shared windows
+### Concurrent splits
 
 ```text
-Launch one subagent named "window-one" with task "[fake:stay] dedicated" in a window named "suba-one". Launch two more named "shared-one" and "shared-two" with task "[fake:stay] shared" in the shared window named "suba-cua". Return after all three launches.
+Launch three subagents named "split-one", "split-two", and "split-three", each with task "[fake:stay] concurrent split". Return after all three launches.
 ```
+
+Verify all three children share the parent's window and stack beside it. No new
+window should appear.
 
 ### Ping and single-line guidance
 
@@ -76,13 +79,14 @@ interrupted child.
 Launch a subagent named "resume" with task "[fake:complete] first result" and wait for its result.
 ```
 
-Then:
+Move the parent pane to another tmux window, then:
 
 ```text
 Call suba_resume for <id> with task "[fake:complete] appended result".
 ```
 
-The resumed result must contain the appended result and exclude the first one.
+The resumed child must split in the parent's current window, not its previous
+window. The resumed result must contain the appended result and exclude the first one.
 
 ### Activity overflow
 

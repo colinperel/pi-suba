@@ -3,6 +3,11 @@ title: Changelog
 description: Release notes for pi-suba.
 ---
 
+## Unreleased
+
+- Children launch and resume only in splits in the parent's current tmux window; placement
+  overrides and settings are no longer supported.
+
 ## v0.2.0 (2026-09-07)
 
 - Separate Pi environments keep independent Suba settings, profiles, instructions, and artifacts;

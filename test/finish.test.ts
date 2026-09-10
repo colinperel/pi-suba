@@ -21,7 +21,6 @@ function fixture() {
     paneId: "%42",
     sessionFile: "/artifacts/session.jsonl",
     artifactDir: "/artifacts",
-    placement: { type: "split" },
     name: "merge-test",
     cwd: "/removed-worktree",
     profile: "default",

@@ -1,12 +1,7 @@
 import { existsSync } from "node:fs"
 import { isAbsolute, join, relative, sep } from "node:path"
 import { subaDirectory } from "../shared/paths.ts"
-import type {
-  CompletionReport,
-  ChildActivity,
-  Placement,
-  ThinkingLevel,
-} from "../shared/protocol.ts"
+import type { CompletionReport, ChildActivity, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
 import type { WorkmuxWorktree } from "../shared/workmux.ts"
 
@@ -35,8 +30,6 @@ export interface ChildRecord {
   sessionFile: string
   artifactDir: string
   paneId?: string
-  windowId?: string
-  placement: Placement
   name: string
   cwd: string
   worktree?: WorkmuxWorktree
@@ -91,11 +84,16 @@ export function restoreRegistry(entries: readonly unknown[]): Map<string, ChildR
       typeof entry.data !== "object"
     )
       continue
-    const record = entry.data as ChildRecord
+    const record = structuredClone(entry.data) as ChildRecord & {
+      placement?: unknown
+      windowId?: unknown
+    }
+    delete record.placement
+    delete record.windowId
     if (!record.id || !Number.isInteger(record.revision)) continue
     const previous = records.get(record.id)
     if (!previous || record.revision > previous.revision)
-      records.set(record.id, resolveStoredArtifactPaths(structuredClone(record)))
+      records.set(record.id, resolveStoredArtifactPaths(record))
   }
   return records
 }

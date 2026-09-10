@@ -3,9 +3,9 @@
 `pi-suba` is my spin on subagents in [Pi](https://pi.dev): delegated Pi sessions running visibly
 in tmux.
 
-Each subagent opens in a tmux pane or window, so you can watch it work, inspect its output, and type
-into its session. Launches return after target creation without waiting for the child result. Results
-and help requests arrive asynchronously in the parent session.
+Each subagent opens in a split in the parent's current tmux window, so you can watch it work,
+inspect its output, and type into its session. Launches return after target creation without
+waiting for the child result. Results and help requests arrive asynchronously in the parent session.
 
 ## Why pi-suba?
 
@@ -13,8 +13,7 @@ and help requests arrive asynchronously in the parent session.
 - **Non-blocking:** the parent can keep working after each child target is created.
 - **Interactive:** the parent or user can send guidance to a live child.
 - **Asynchronous:** completion, failure, and help requests start a new parent turn automatically.
-- **Flexible:** choose models, thinking levels, tool access, context, prompts, extensions, and tmux
-  placement per child.
+- **Flexible:** choose models, thinking levels, tool access, context, prompts, and extensions.
 - **Resumable:** continue a completed or interrupted child's existing session.
 
 ## Requirements
@@ -59,7 +58,7 @@ parent delegates or how children launch:
 
 | Resource | Controls |
 | --- | --- |
-| `config.json` | Global launch defaults, placement, extensions, and activity display |
+| `config.json` | Global launch defaults, extensions, and activity display |
 | `instructions.md` | When and how the parent should delegate |
 | `profiles/*.md` | Reusable child models, tools, context loading, and system prompts |
 | `suba` arguments | Overrides for one child launch |
@@ -140,7 +139,6 @@ The `suba` tool accepts:
 | `thinking`     | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `cwd`          | Source directory, resolved relative to the parent directory  |
 | `worktree`     | Provision a persistent workmux worktree for the child        |
-| `placement`    | `split`, `window`, or `shared-window`                        |
 | `autoComplete` | Per-launch automatic completion override                     |
 
 Explicit models must exist in Pi's model registry and belong to the active model scope.
@@ -294,14 +292,12 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
   "defaultProfile": "default",
   "model": "openai-codex/gpt-5.6-sol",
   "thinking": "medium",
-  "placement": { "type": "split" },
   "autoComplete": true,
   "childExtensions": ["npm:some-pi-package"],
   "activity": {
     "pollMs": 500,
     "maxRows": 8
-  },
-  "sharedWindowName": "suba"
+  }
 }
 ```
 
@@ -310,12 +306,10 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
 | `defaultProfile`        | `"default"`           | Profile used when a launch omits one        |
 | `model`                 | Pi default            | Default child model                         |
 | `thinking`              | Pi default            | Default child thinking level                |
-| `placement`             | `{ "type": "split" }` | Default tmux placement                      |
 | `autoComplete`          | `true`                | Finish a child when its agent settles       |
 | `childExtensions`       | `[]`                  | Additional extensions loaded in every child |
 | `activity.pollMs`       | `500`                 | Parent watcher interval in milliseconds     |
 | `activity.maxRows`      | `8`                   | Maximum rows in the activity widget         |
-| `sharedWindowName`      | `"suba"`              | Default shared-window name                  |
 
 Model, thinking, and automatic completion settings resolve in this order:
 
@@ -424,29 +418,19 @@ selection, but `bash` can still modify the filesystem. It is not a security boun
 A built-in `default` profile is always available. It uses the default tool policy, loads context
 files and skills, and adds no profile prompt. Create `profiles/default.md` to customize it.
 
-## Tmux placement
+## Tmux splits
 
-Launches use the configured placement by default. Per-launch placement is an explicit override for user-requested layouts.
+Launch and resume always create a split in the parent's current tmux window. The first
+child opens beside the parent; additional children stack below it with equal heights.
+Only panes owned by that parent are grouped. There is no placement argument or setting.
+Launch and resume schemas reject obsolete placement arguments; remove them from saved
+launch recipes.
 
-| Placement       | Behavior                                                     |
-| --------------- | ------------------------------------------------------------ |
-| `split`         | Open beside the parent, then stack additional children below |
-| `window`        | Open a dedicated tmux window named after the child           |
-| `shared-window` | Tile multiple children in one named tmux window              |
-
-Example per-launch placement values:
-
-```json
-{ "type": "split" }
-```
-
-```json
-{ "type": "window" }
-```
-
-```json
-{ "type": "shared-window", "windowName": "review" }
-```
+Legacy `placement` and `sharedWindowName` config keys are accepted but ignored and can
+be removed. Stored child `placement` and `windowId` fields are discarded on restoration.
+Existing live children stay in their panes and remain watchable, reachable, and finishable.
+Resuming uses the current parent pane, never a historical child window. Historical tool
+results remain readable without displaying obsolete placement metadata.
 
 ## Activity, completion, and resume
 

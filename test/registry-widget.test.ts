@@ -15,7 +15,6 @@ const record = (revision: number): ChildRecord => ({
   state: "running",
   sessionFile: "/s",
   artifactDir: "/a",
-  placement: { type: "split" },
   name: "auth-tests",
   cwd: "/w",
   profile: "default",
@@ -35,6 +34,18 @@ const record = (revision: number): ChildRecord => ({
 })
 
 describe("registry and widget", () => {
+  it.each(["split", "window", "shared-window"])(
+    "discards historical %s layout metadata without mutating stored entries",
+    (type) => {
+      const child = { ...record(1), paneId: "%42", placement: { type }, windowId: "@old" }
+      const restored = restoreRegistry([
+        { type: "custom", customType: "suba-child", data: child },
+      ]).get(child.id)
+      expect(restored).toEqual({ ...record(1), paneId: "%42" })
+      expect(child.windowId).toBe("@old")
+      expect(child.placement).toEqual({ type })
+    },
+  )
   it("restores the highest revision", () => {
     const restored = restoreRegistry([
       { type: "custom", customType: "suba-child", data: record(1) },

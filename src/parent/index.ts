@@ -3,7 +3,6 @@ import { formatRequestContext } from "../shared/context-tokens.ts"
 import { loadConfig, type SubaConfig } from "../shared/config.ts"
 import { loadInstructions } from "../shared/instructions.ts"
 import { loadProfiles, type Profile } from "../shared/profiles.ts"
-import { applySharedWindowGrid } from "../shared/tmux.ts"
 import { registerCommands } from "./commands.ts"
 import { registerTools, type ManagerHost } from "./tools.ts"
 import { isLive, restoreRegistry, type ChildRecord } from "./registry.ts"
@@ -83,8 +82,6 @@ export default async function (pi: ExtensionAPI) {
       records.set(record.id, record)
       host.persist(record)
       refreshWidget()
-      if (!isLive(record) && record.windowId && record.placement.type === "shared-window")
-        void applySharedWindowGrid(record.windowId).catch(() => undefined)
       if (notify)
         pi.sendMessage(
           {

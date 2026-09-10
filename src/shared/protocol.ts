@@ -4,11 +4,6 @@ import { dirname, join } from "node:path"
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
 
-export type Placement =
-  | { type: "split" }
-  | { type: "window" }
-  | { type: "shared-window"; windowName?: string }
-
 export interface ChildActivity {
   version: 1
   childId: string

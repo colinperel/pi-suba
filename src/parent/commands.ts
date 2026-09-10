@@ -27,7 +27,6 @@ export function subaDelegationPrompt(task: string, profiles: Iterable<Delegation
     "Use fork only when required context cannot be captured adequately in the task or handoff files.",
     "Choose each model and thinking level using the configured subagent guidance.",
     "Give each subagent a concise descriptive name.",
-    "Omit placement unless the user explicitly requests a specific placement. Omission uses the configured default. The built-in default places children in splits in the parent window.",
     "Do not wait for subagents during the active turn. Results and guidance requests arrive automatically and start another turn.",
     "After launching, continue useful independent work or end your turn. Never use sleep or repeated suba_list calls to wait.",
     ...profileGuidance(profiles),

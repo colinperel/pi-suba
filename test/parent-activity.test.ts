@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { validateToolArguments, type Tool as AiTool } from "@earendil-works/pi-ai"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -16,11 +17,10 @@ import { createTarget, paneExists, sendToPane } from "../src/shared/tmux.ts"
 
 vi.mock("../src/shared/tmux.ts", async (original) => ({
   ...(await original<typeof import("../src/shared/tmux.ts")>()),
-  createTarget: vi.fn(async () => ({ paneId: "%child", placement: { type: "split" } })),
+  createTarget: vi.fn(async () => ({ paneId: "%child" })),
   paneExists: vi.fn(async () => true),
   sendToPane: vi.fn(async () => undefined),
   tmuxExec: vi.fn(async () => "tmux 3.5"),
-  applySharedWindowGrid: vi.fn(async () => undefined),
 }))
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown
@@ -63,7 +63,7 @@ async function record(id: string, patch: Partial<ChildRecord> = {}): Promise<Chi
     sessionFile,
     artifactDir,
     paneId: `%${id}`,
-    placement: { type: "split" },
+
     name: id,
     cwd: root,
     profile: "default",
@@ -134,6 +134,7 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
     tools.get(name)!.execute("call", params, new AbortController().signal, undefined, ctx)
   return {
     events,
+    tools,
     snapshots,
     appendEntry,
     sendMessage,
@@ -146,6 +147,83 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
 }
 
 describe("parent activity event bus", () => {
+  it.each(["window", "shared-window"])(
+    "resumes historical %s records at the current parent pane",
+    async (type) => {
+      const child = {
+        ...(await record("legacy", { state: "completed" })),
+        placement: { type, windowName: "old" },
+        windowId: "@old",
+      }
+      await writeFile(join(child.artifactDir, "profile.md"), "")
+      const parent = await harness([child])
+      await parent.emit("session_start")
+      vi.stubEnv("TMUX_PANE", "%current-parent")
+      await parent.execute("suba_resume", {
+        id: child.id,
+        task: "continue",
+        placement: { type: "window" },
+      })
+      expect(createTarget).toHaveBeenCalledExactlyOnceWith("%current-parent", expect.any(String))
+      const stored = parent.appendEntry.mock.calls.at(-1)![1]
+      expect(stored).not.toHaveProperty("placement")
+      expect(stored).not.toHaveProperty("windowId")
+      expect(stored.sessionFile).toBe(child.sessionFile)
+    },
+  )
+
+  it("ignores window configuration when launching and rendering historical results", async () => {
+    await mkdir(join(root, "suba"))
+    await writeFile(
+      join(root, "suba", "config.json"),
+      JSON.stringify({ placement: { type: "window" }, sharedWindowName: "old" }),
+    )
+    const parent = await harness()
+    await parent.emit("session_start")
+    const result = await parent.execute("suba", { name: "child", task: "work" })
+    expect(createTarget).toHaveBeenCalledExactlyOnceWith("%parent", expect.any(String))
+    const tool = parent.tools.get("suba")! as unknown as {
+      renderResult: (...args: any[]) => { render: (width: number) => string[] }
+    }
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text }
+    for (const placement of [undefined, "shared-window"]) {
+      const text = tool
+        .renderResult(
+          { ...result, details: { ...result.details, placement } },
+          { expanded: true },
+          theme,
+        )
+        .render(160)
+        .join("\n")
+      expect(text).toContain(`id ${result.details.id}`)
+      expect(text).not.toContain("shared-window")
+      expect(text).not.toContain("undefined")
+    }
+  })
+
+  it("does not expose placement in launch or resume schemas", async () => {
+    const parent = await harness()
+    for (const name of ["suba", "suba_resume"]) {
+      const tool = parent.tools.get(name)! as unknown as {
+        parameters: { properties: object; additionalProperties: boolean }
+      }
+      expect(tool.parameters.properties).not.toHaveProperty("placement")
+      expect(tool.parameters.additionalProperties).toBe(false)
+      expect(() =>
+        validateToolArguments(tool as unknown as AiTool, {
+          type: "toolCall",
+          id: "call",
+          name,
+          arguments: {
+            ...(name === "suba" ? { name: "child" } : { id: "child" }),
+            task: "work",
+            placement: { type: "window" },
+          },
+        }),
+      ).toThrow("Validation failed")
+    }
+  })
+
   it.each([undefined, ["missing/report.md"]])(
     "persists and sends explicit reports with artifacts %j",
     async (artifacts) => {
@@ -421,7 +499,13 @@ describe("parent activity event bus", () => {
   it("publishes successful launches and resumes without reusing the previous activity sequence", async () => {
     const parent = await harness()
     await parent.emit("session_start")
-    const launched = await parent.execute("suba", { name: "launch", task: "work" })
+    const launched = await parent.execute("suba", {
+      name: "launch",
+      task: "work",
+      placement: { type: "window" },
+    })
+    expect(createTarget).toHaveBeenLastCalledWith("%parent", expect.any(String))
+    expect(launched.details).not.toHaveProperty("placement")
     expect(parent.snapshots).toEqual([{ activeCount: 0 }, { activeCount: 1 }])
     await parent.tick()
     const child = await parent.list().then((children) => children[0]!)

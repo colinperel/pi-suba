@@ -18,7 +18,6 @@ function makeRecord(dir: string): ChildRecord {
     state: "running",
     sessionFile: join(dir, "session.jsonl"),
     artifactDir: dir,
-    placement: { type: "split" },
     name: "worker",
     cwd: "/tmp",
     profile: "default",

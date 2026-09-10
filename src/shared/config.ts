@@ -2,36 +2,33 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { agentDirectory, subaDirectory } from "./paths.ts"
-import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "./protocol.ts"
+import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
 
 export interface SubaConfig {
   defaultProfile: string
   model?: string
   thinking?: ThinkingLevel
-  placement: Placement
   autoComplete: boolean
   childExtensions: string[]
   activity: { pollMs: number; maxRows: number }
-  sharedWindowName: string
 }
 
 export const DEFAULT_CONFIG: SubaConfig = {
   defaultProfile: "default",
-  placement: { type: "split" },
   autoComplete: true,
   childExtensions: [],
   activity: { pollMs: 500, maxRows: 8 },
-  sharedWindowName: "suba",
 }
 
 const ROOT_KEYS = new Set([
   "defaultProfile",
   "model",
   "thinking",
-  "placement",
   "autoComplete",
   "childExtensions",
   "activity",
+  // Obsolete layout keys are accepted but never read or returned.
+  "placement",
   "sharedWindowName",
 ])
 
@@ -54,21 +51,6 @@ function integer(value: unknown, label: string, minimum: number, maximum: number
     throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`)
   }
   return value as number
-}
-
-export function parsePlacement(value: unknown, label = "placement"): Placement {
-  const input = object(value, label)
-  for (const key of Object.keys(input))
-    if (key !== "type" && key !== "windowName")
-      throw new Error(`${label} has unsupported key: ${key}`)
-  if (input.type !== "split" && input.type !== "window" && input.type !== "shared-window")
-    throw new Error(`${label}.type is invalid`)
-  if (input.type !== "shared-window" && input.windowName !== undefined)
-    throw new Error(`${label}.windowName is valid only for shared-window placement`)
-  if (input.type !== "shared-window") return { type: input.type }
-  const windowName =
-    input.windowName === undefined ? undefined : string(input.windowName, `${label}.windowName`)
-  return windowName ? { type: input.type, windowName } : { type: input.type }
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -106,8 +88,6 @@ export function parseConfig(value: unknown): SubaConfig {
         : string(input.defaultProfile, "defaultProfile"),
     model: input.model === undefined ? undefined : string(input.model, "model"),
     thinking,
-    placement:
-      input.placement === undefined ? DEFAULT_CONFIG.placement : parsePlacement(input.placement),
     autoComplete:
       input.autoComplete === undefined
         ? DEFAULT_CONFIG.autoComplete
@@ -126,10 +106,6 @@ export function parseConfig(value: unknown): SubaConfig {
           ? DEFAULT_CONFIG.activity.maxRows
           : integer(activityInput.maxRows, "activity.maxRows", 1, 100),
     },
-    sharedWindowName:
-      input.sharedWindowName === undefined
-        ? DEFAULT_CONFIG.sharedWindowName
-        : string(input.sharedWindowName, "sharedWindowName"),
   }
 }
 

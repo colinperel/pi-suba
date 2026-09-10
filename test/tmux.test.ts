@@ -6,7 +6,6 @@ import {
   paneExists,
   PartialTmuxTargetError,
   sendToPane,
-  subaWindowName,
   type TmuxExec,
 } from "../src/shared/tmux.ts"
 const exec = promisify(execFile)
@@ -24,20 +23,8 @@ const run: TmuxExec = async (args, input) => {
   })
 }
 
-describe("tmux window names", () => {
-  it("uses one suba prefix and sanitizes the name", () => {
-    expect(subaWindowName("review task")).toBe("suba-review-task")
-    expect(subaWindowName("suba-review")).toBe("suba-review")
-    expect(subaWindowName("suba")).toBe("suba")
-  })
-})
-
 describe("tmux target transactions", () => {
-  it.each([
-    [{ type: "split" } as const, "split-window"],
-    [{ type: "window" } as const, "new-window"],
-    [{ type: "shared-window", windowName: "agents" } as const, "new-window"],
-  ])("removes a partial %s target", async (placement, createCommand) => {
+  it("removes a partial split target", async () => {
     const calls: string[][] = []
     const run: TmuxExec = async (args) => {
       calls.push(args)
@@ -45,18 +32,15 @@ describe("tmux target transactions", () => {
       if (command === "display-message") {
         const format = args.at(-1)
         if (format === "#{window_id}") return "@1"
-        if (format === "#{session_id}") return "$1"
       }
-      if (command === "list-panes" || command === "list-windows") return ""
-      if (command === createCommand) return "%9"
+      if (command === "list-panes") return ""
+      if (command === "split-window") return "%9"
       if (command === "set-option") throw new Error("configuration failed")
       if (command === "kill-pane") return ""
       throw new Error(`Unexpected tmux command: ${args.join(" ")}`)
     }
 
-    await expect(createTarget(placement, "%1", "sleep 60", "child", "suba", run)).rejects.toThrow(
-      "configuration failed",
-    )
+    await expect(createTarget("%1", "sleep 60", run)).rejects.toThrow("configuration failed")
     expect(calls).toContainEqual(["kill-pane", "-t", "%9"])
   })
 
@@ -70,14 +54,7 @@ describe("tmux target transactions", () => {
       throw new Error(`Unexpected tmux command: ${args.join(" ")}`)
     }
 
-    const error = await createTarget(
-      { type: "split" },
-      "%1",
-      "sleep 60",
-      "child",
-      "suba",
-      run,
-    ).catch((caught: unknown) => caught)
+    const error = await createTarget("%1", "sleep 60", run).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(PartialTmuxTargetError)
     expect((error as PartialTmuxTargetError).paneId).toBe("%9")
   })
@@ -113,31 +90,44 @@ describe.skipIf(!process.env.PATH)("tmux integration", () => {
   })
   it("creates stable panes and sends literal and multiline input", async () => {
     if (!parentPane) return
-    const target = await createTarget(
-      { type: "split" },
-      parentPane,
-      "cat > /tmp/pi-suba-tmux-input",
-      "child",
-      "suba",
-      run,
-    )
+    const target = await createTarget(parentPane, "cat > /tmp/pi-suba-tmux-input", run)
     expect(target.paneId).toMatch(/^%/)
     expect(await paneExists(target.paneId, run)).toBe(true)
     await sendToPane(target.paneId, "one line", run)
   })
-  it("creates a prefixed dedicated window", async () => {
+  it("follows a moved parent without reusing its historical child window", async () => {
     if (!parentPane) return
-    const target = await createTarget(
-      { type: "window" },
-      parentPane,
+    const root = await run([
+      "new-window",
+      "-d",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      "test:",
       "sleep 60",
-      "watcher-research",
-      "suba",
-      run,
+    ])
+    const oldChild = await createTarget(root, "sleep 60", run)
+    const oldWindow = await run(["display-message", "-p", "-t", root, "#{window_id}"])
+    await run(["break-pane", "-d", "-s", root])
+    const currentWindow = await run(["display-message", "-p", "-t", root, "#{window_id}"])
+    const windowsBefore = await run(["list-windows", "-t", "test", "-F", "#{window_id}"])
+    const calls: string[][] = []
+    const tracked: TmuxExec = async (args) => {
+      calls.push(args)
+      return run(args)
+    }
+    const child = await createTarget(root, "sleep 60", tracked)
+    expect(currentWindow).not.toBe(oldWindow)
+    expect(await run(["display-message", "-p", "-t", child.paneId, "#{window_id}"])).toBe(
+      currentWindow,
     )
-    expect(await run(["display-message", "-p", "-t", target.paneId, "#{window_name}"])).toBe(
-      "suba-watcher-research",
+    expect(await run(["display-message", "-p", "-t", oldChild.paneId, "#{window_id}"])).toBe(
+      oldWindow,
     )
+    expect(await run(["list-windows", "-t", "test", "-F", "#{window_id}"])).toBe(windowsBefore)
+    expect(calls.some((args) => args[0] === "new-window")).toBe(false)
+    expect(calls.find((args) => args[0] === "split-window")).toContain(root)
   })
   it("stacks concurrent splits in a right-hand column", async () => {
     if (!parentPane) return
@@ -168,9 +158,9 @@ describe.skipIf(!process.env.PATH)("tmux integration", () => {
     ])
     const unrelatedWidth = await run(["display-message", "-p", "-t", unrelated, "#{pane_width}"])
     const children = await Promise.all([
-      createTarget({ type: "split" }, root, "sleep 60", "one", "suba", run),
-      createTarget({ type: "split" }, root, "sleep 60", "two", "suba", run),
-      createTarget({ type: "split" }, root, "sleep 60", "three", "suba", run),
+      createTarget(root, "sleep 60", run),
+      createTarget(root, "sleep 60", run),
+      createTarget(root, "sleep 60", run),
     ])
     const geometry = await Promise.all(
       [root, ...children.map((child) => child.paneId)].map(async (pane) => {
@@ -202,113 +192,5 @@ describe.skipIf(!process.env.PATH)("tmux integration", () => {
     expect(await run(["display-message", "-p", "-t", unrelated, "#{pane_width}"])).toBe(
       unrelatedWidth,
     )
-  })
-  it("stacks panes in a shared window", async () => {
-    if (!parentPane) return
-    const [first, second] = await Promise.all([
-      createTarget(
-        { type: "shared-window", windowName: "agents" },
-        parentPane,
-        "sleep 60",
-        "one",
-        "suba",
-        run,
-      ),
-      createTarget(
-        { type: "shared-window", windowName: "agents" },
-        parentPane,
-        "sleep 60",
-        "two",
-        "suba",
-        run,
-      ),
-    ])
-    expect(first.paneId).not.toBe(second.paneId)
-    expect(first.windowId).toBe(second.windowId)
-    expect(await run(["display-message", "-p", "-t", first.paneId, "#{window_name}"])).toBe(
-      "suba-agents",
-    )
-    const widths = await Promise.all(
-      [first.paneId, second.paneId].map((pane) =>
-        run(["display-message", "-p", "-t", pane, "#{pane_width}"]),
-      ),
-    )
-    expect(new Set(widths).size).toBe(1)
-  })
-  it("keeps a workmux sidebar beside shared-window panes", async () => {
-    if (!parentPane) return
-    const first = await createTarget(
-      { type: "shared-window", windowName: "sidebar-agents" },
-      parentPane,
-      "sleep 60",
-      "one",
-      "suba",
-      run,
-    )
-    const sidebar = await run([
-      "split-window",
-      "-hbf",
-      "-l",
-      "20",
-      "-d",
-      "-P",
-      "-F",
-      "#{pane_id}",
-      "-t",
-      first.paneId,
-      "sleep 60",
-    ])
-    await run(["set-option", "-p", "-t", sidebar, "@workmux_role", "sidebar"])
-    const second = await createTarget(
-      { type: "shared-window", windowName: "sidebar-agents" },
-      parentPane,
-      "sleep 60",
-      "two",
-      "suba",
-      run,
-    )
-    const third = await createTarget(
-      { type: "shared-window", windowName: "sidebar-agents" },
-      parentPane,
-      "sleep 60",
-      "three",
-      "suba",
-      run,
-    )
-    const fourth = await createTarget(
-      { type: "shared-window", windowName: "sidebar-agents" },
-      parentPane,
-      "sleep 60",
-      "four",
-      "suba",
-      run,
-    )
-    const geometry = await Promise.all(
-      [sidebar, first.paneId, second.paneId, third.paneId, fourth.paneId].map(async (pane) => {
-        const [left, top, width, height] = (
-          await run([
-            "display-message",
-            "-p",
-            "-t",
-            pane,
-            "#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}",
-          ])
-        )
-          .split("\t")
-          .map(Number)
-        return { left, top, width, height }
-      }),
-    )
-    const [sidebarPane, ...agents] = geometry
-    expect(sidebarPane.top).toBe(0)
-    expect(sidebarPane.height).toBe(60)
-    expect(agents.every((pane) => pane.left > sidebarPane.left)).toBe(true)
-    expect(new Set(agents.map((pane) => pane.left)).size).toBe(2)
-    expect(new Set(agents.map((pane) => pane.top)).size).toBe(2)
-    expect(new Set(agents.map((pane) => pane.width)).size).toBe(1)
-    expect(
-      Math.max(...agents.map((pane) => pane.height)) -
-        Math.min(...agents.map((pane) => pane.height)),
-    ).toBeLessThanOrEqual(1)
   })
 })

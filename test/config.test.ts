@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  DEFAULT_CONFIG,
-  parseConfig,
-  parsePlacement,
-  resolveChildExtensionSource,
-} from "../src/shared/config.ts"
+import { DEFAULT_CONFIG, parseConfig, resolveChildExtensionSource } from "../src/shared/config.ts"
 
 describe("configuration", () => {
   it("applies package defaults", () => expect(parseConfig({})).toEqual(DEFAULT_CONFIG))
@@ -13,17 +8,24 @@ describe("configuration", () => {
       parseConfig({
         defaultProfile: "explore",
         thinking: "high",
-        placement: { type: "shared-window", windowName: "agents" },
         childExtensions: ["../../code/pi-cc-tools-local"],
         activity: { pollMs: 200, maxRows: 3 },
       }),
     ).toMatchObject({
       defaultProfile: "explore",
       thinking: "high",
-      placement: { type: "shared-window", windowName: "agents" },
       childExtensions: ["../../code/pi-cc-tools-local"],
       activity: { pollMs: 200, maxRows: 3 },
     }))
+  it.each([
+    { type: "split" },
+    { type: "window" },
+    { type: "shared-window", windowName: "agents" },
+    null,
+    "invalid",
+  ])("ignores obsolete layout settings %j", (placement) => {
+    expect(parseConfig({ placement, sharedWindowName: "agents" })).toEqual(DEFAULT_CONFIG)
+  })
   it("resolves configured local sources from the Pi agent directory", () => {
     expect(
       resolveChildExtensionSource("../../code/pi-cc-tools-local", "/Users/example/.pi/agent"),
@@ -34,11 +36,5 @@ describe("configuration", () => {
     expect(() => parseConfig({ surprise: true })).toThrow("unsupported key")
     expect(() => parseConfig({ activity: { pollMs: 10 } })).toThrow("between 100")
     expect(() => parseConfig({ childExtensions: ["same", "same"] })).toThrow("duplicates")
-    expect(() => parsePlacement({ type: "split", windowName: "bad" })).toThrow(
-      "valid only for shared-window",
-    )
-    expect(() => parsePlacement({ type: "window", windowName: "bad" })).toThrow(
-      "valid only for shared-window",
-    )
   })
 })

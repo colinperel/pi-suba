@@ -12,38 +12,14 @@ import { Type } from "typebox"
 import { resolveChildExtensionSource, type SubaConfig } from "../shared/config.ts"
 import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
-import { THINKING_LEVELS, type Placement, type ThinkingLevel } from "../shared/protocol.ts"
+import { THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
-import {
-  applySharedWindowGrid,
-  createTarget,
-  PartialTmuxTargetError,
-  sendToPane,
-  tmuxExec,
-} from "../shared/tmux.ts"
+import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive, isResumable } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
 
-const PlacementSchema = Type.Union(
-  [
-    Type.Object({ type: Type.Literal("split") }),
-    Type.Object({ type: Type.Literal("window") }),
-    Type.Object({
-      type: Type.Literal("shared-window"),
-      windowName: Type.Optional(
-        Type.String({
-          description: "Tmux window label used to group children as panes.",
-        }),
-      ),
-    }),
-  ],
-  {
-    description:
-      "Optional tmux placement override. Omit unless the user explicitly requests a placement. Omission uses the configured default. The built-in default is a split in the parent window. window creates a window named for the child, and shared-window groups children as panes.",
-  },
-)
 const ThinkingSchema = StringEnum(THINKING_LEVELS, {
   description:
     "Thinking level paired with an explicit model choice. Omit it to use the configured default.",
@@ -109,14 +85,12 @@ export async function finishChild(
   } finally {
     host.refreshWidget()
   }
-  if (previous.windowId && previous.placement.type === "shared-window")
-    await applySharedWindowGrid(previous.windowId).catch(() => undefined)
   return completed
 }
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in tmux. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Omit placement unless the user explicitly requests one, so the configured default applies. Results, notifications, and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in a split in the parent's current tmux window. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results, notifications, and help requests automatically start another parent turn. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -143,18 +117,20 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
           "Provision a persistent worktree with workmux add --headless --json and launch the child inside it. Use for parallel code changes; the parent authorizes integration by sending /skill:merge.",
       }),
     ),
-    placement: Type.Optional(PlacementSchema),
     autoComplete: Type.Optional(Type.Boolean()),
   }
-  if (profiles.size <= 1) return Type.Object(parameters)
-  return Type.Object({
-    ...parameters,
-    profile: Type.Optional(
-      StringEnum([...profiles.keys()], {
-        description: "Subagent profile. Omit it to use the configured default profile.",
-      }),
-    ),
-  })
+  if (profiles.size <= 1) return Type.Object(parameters, { additionalProperties: false })
+  return Type.Object(
+    {
+      ...parameters,
+      profile: Type.Optional(
+        StringEnum([...profiles.keys()], {
+          description: "Subagent profile. Omit it to use the configured default profile.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  )
 }
 
 function resolveLaunch(
@@ -236,7 +212,6 @@ interface LaunchToolDetails {
   profile: string
   model?: string
   thinking?: ThinkingLevel
-  placement?: string
   worktreeHandle?: string
   worktreePath?: string
   status: RegistryState
@@ -275,7 +250,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       thinking?: ThinkingLevel
       cwd?: string
       worktree?: boolean
-      placement?: Placement
       autoComplete?: boolean
     },
     ctx: ExtensionContext,
@@ -397,16 +371,9 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         { encoding: "utf8", mode: 0o700 },
       )
       await chmod(scriptPath, 0o700)
-      const placement = params.placement ?? resume?.placement ?? host.config.placement
       let target
       try {
-        target = await createTarget(
-          placement,
-          parentPane,
-          shellQuote(scriptPath),
-          params.name,
-          host.config.sharedWindowName,
-        )
+        target = await createTarget(parentPane, shellQuote(scriptPath))
       } catch (error) {
         if (error instanceof PartialTmuxTargetError) {
           rollbackArmed = false
@@ -425,8 +392,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         sessionFile,
         artifactDir,
         paneId: target.paneId,
-        windowId: target.windowId,
-        placement,
         name: params.name,
         cwd,
         worktree,
@@ -478,7 +443,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
-          placement: record.placement.type,
           worktreeHandle: record.worktree?.handle,
           worktreePath: record.worktree?.worktreePath,
           status: record.state,
@@ -517,7 +481,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         theme.fg("dim", `  ${[meta, details.tmuxTarget].filter(Boolean).join(" · ")}`),
       ]
       if (expanded) {
-        lines.push(theme.fg("dim", `  id ${details.id} · ${details.placement}`))
+        lines.push(theme.fg("dim", `  id ${details.id}`))
         lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
         if (details.worktreeHandle)
           lines.push(
@@ -602,14 +566,16 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_resume",
     label: "Suba Resume",
     description:
-      "Resume a completed or exited subagent thread in a new tmux target. Omit placement unless the user explicitly requests one.",
-    parameters: Type.Object({
-      id: Type.String(),
-      task: Type.String(),
-      placement: Type.Optional(PlacementSchema),
-      model: Type.Optional(ModelSchema),
-      thinking: Type.Optional(ThinkingSchema),
-    }),
+      "Resume a completed or exited subagent thread in a split in the parent's current tmux window.",
+    parameters: Type.Object(
+      {
+        id: Type.String(),
+        task: Type.String(),
+        model: Type.Optional(ModelSchema),
+        thinking: Type.Optional(ThinkingSchema),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_call, params, signal, _update, ctx) {
       const previous = host.records.get(params.id)
       if (!previous) throw new Error(`Unknown subagent: ${params.id}`)

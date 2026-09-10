@@ -41,11 +41,11 @@ describe("agent-scoped paths", () => {
       const agent = join(root, name)
       const suba = join(agent, "suba")
       await mkdir(join(suba, "profiles"), { recursive: true })
-      await writeFile(join(suba, "config.json"), JSON.stringify({ sharedWindowName: name }))
+      await writeFile(join(suba, "config.json"), JSON.stringify({ defaultProfile: name }))
       await writeFile(join(suba, "instructions.md"), name)
       await writeFile(join(suba, "profiles", `${name}.md`), `Profile for ${name}`)
       vi.stubEnv("PI_CODING_AGENT_DIR", agent)
-      expect((await loadConfig()).sharedWindowName).toBe(name)
+      expect((await loadConfig()).defaultProfile).toBe(name)
       expect(await loadInstructions()).toBe(name)
       expect([...(await loadProfiles()).keys()]).toEqual(["default", name])
       expect(resolveChildExtensionSource("./extensions/helper.ts")).toBe(
@@ -55,7 +55,7 @@ describe("agent-scoped paths", () => {
     }
     vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "empty"))
     expect(await loadInstructions()).toBe("")
-    expect((await loadConfig()).sharedWindowName).toBe("suba")
+    expect((await loadConfig()).defaultProfile).toBe("default")
     expect([...(await loadProfiles()).keys()]).toEqual(["default"])
   })
 

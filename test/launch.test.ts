@@ -1,3 +1,4 @@
+import { validateToolArguments } from "@earendil-works/pi-ai"
 import { execFile } from "node:child_process"
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -24,6 +25,21 @@ afterEach(() => {
 })
 
 describe("child launch validation", () => {
+  it.each([false, true])("rejects placement overrides with multiple profiles %s", (multiple) => {
+    const profiles = new Map([["default", BUILTIN_DEFAULT_PROFILE]])
+    if (multiple) profiles.set("review", { ...BUILTIN_DEFAULT_PROFILE, name: "review" })
+    const tool = { name: "suba", description: "", parameters: launchParametersSchema(profiles) }
+    for (const type of ["split", "window", "shared-window"]) {
+      expect(() =>
+        validateToolArguments(tool, {
+          type: "toolCall",
+          id: "call",
+          name: "suba",
+          arguments: { name: "child", task: "work", placement: { type } },
+        }),
+      ).toThrow("Validation failed")
+    }
+  })
   it("uses the deterministic executable override", () => {
     process.env.SUBA_PI_EXECUTABLE = "./test/fixtures/fake-pi"
     expect(invocation()).toBe(`'${process.cwd()}/test/fixtures/fake-pi'`)
