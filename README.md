@@ -320,6 +320,10 @@ Do not launch a child merely to duplicate the parent's analysis. Prefer fresh co
 task self-contained. Use fork only when the required context cannot be captured in the task or in
 handoff files.
 
+Delegate outcomes, not steps. Give each child clear ownership and enough authority to finish.
+Require approval only when it must cross an ownership boundary, change an agreed contract, or
+exceed authorization.
+
 # Resume or start fresh
 
 Resume a child when its accumulated knowledge is costly to reconstruct, such as an active
