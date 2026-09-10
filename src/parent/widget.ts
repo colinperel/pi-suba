@@ -135,7 +135,7 @@ export class ActivityWidget implements Component {
         item.state === "waiting"
           ? guidanceColor(`· ${item.activity}`)
           : this.theme.fg("dim", `· ${item.activity}`)
-      const badge = item.worktree ? ` ${this.theme.fg("dim", "")}` : ""
+      const badge = item.worktree ? ` ${this.theme.fg("accent", "")}` : ""
       const left = ` ${glyph} ${this.theme.bold(item.name)}${badge} ${activity}`
       const detailParts =
         innerWidth >= 52 ? [item.model, item.thinking, item.elapsed] : [item.elapsed]
