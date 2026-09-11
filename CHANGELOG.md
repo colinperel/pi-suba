@@ -3,10 +3,15 @@ title: Changelog
 description: Release notes for pi-suba.
 ---
 
-## Unreleased
+## v0.3.0 (2026-09-11)
 
-- Children launch and resume only in splits in the parent's current tmux window; placement
-  overrides and settings are no longer supported.
+- Launch subagents in isolated workmux worktrees and finish verified integrations with `suba_finish`.
+- Send non-blocking progress updates with `suba_notify`; `suba_ask` replaces `suba_ping` for blocking questions.
+- Explicit completion now requires a summary and supports optional artifact paths.
+- Show last-request context tokens in completion reports and subagent listings.
+- Expose active subagent counts to other extensions and fix stale activity indicators.
+- Failed sends to finished children include their latest result and resume guidance.
+- Children launch and resume only in splits in the parent's current tmux window; placement overrides and settings are no longer supported.
 
 ## v0.2.0 (2026-09-07)
 
