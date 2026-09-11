@@ -125,7 +125,7 @@ estimate or automatic cutoff. Apply the same judgment when token metadata is una
 | ------------- | ----------------------------------------------------- |
 | `suba`        | Launch a child and return after target creation       |
 | `suba_send`   | Send guidance to a live child by ID                   |
-| `suba_finish` | Record a verified result and close a waiting child pane |
+| `suba_finish` | Record a verified result and close an idle or awaiting-parent child pane |
 | `suba_resume` | Continue a completed or exited child's session        |
 | `suba_list`   | Take a one-time snapshot of child status and activity |
 
@@ -202,8 +202,10 @@ After independently verifying integration, the parent calls `suba_finish`:
 }
 ```
 
-`suba_finish` requires a child awaiting parent guidance. It closes only that
-child's pane and records the parent's verified result as completed. It does not
+`suba_finish` accepts a child awaiting parent guidance or a running child whose
+activity file confirms it has settled into waiting. An idle child does not need
+to call `suba_ask` just to become finishable. It closes only that child's pane
+and records the parent's verified result as completed. It does not
 merge or remove worktrees. Leave blocked children open and send guidance instead.
 Finish a verified merge before authorizing the next one. Removed worktrees are
 reported as non-resumable; saved transcripts and results remain available.

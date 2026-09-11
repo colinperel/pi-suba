@@ -1,4 +1,8 @@
 import { execFile } from "node:child_process"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import * as protocol from "../src/shared/protocol.ts"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DEFAULT_CONFIG } from "../src/shared/config.ts"
@@ -11,7 +15,29 @@ vi.mock("../src/shared/tmux.ts", async (original) => ({
   tmuxExec: vi.fn(),
 }))
 
-afterEach(() => vi.resetAllMocks())
+const directories: string[] = []
+afterEach(async () => {
+  vi.restoreAllMocks()
+  vi.resetAllMocks()
+  for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true })
+})
+
+async function runningFixture(state: protocol.ChildActivity["state"] = "waiting") {
+  const host = fixture()
+  const artifactDir = await mkdtemp(join(tmpdir(), "suba-finish-"))
+  directories.push(artifactDir)
+  const child = host.records.get("child")!
+  child.state = "running"
+  child.artifactDir = artifactDir
+  await protocol.atomicWriteJson(join(artifactDir, "activity.json"), {
+    version: 1,
+    childId: child.id,
+    sequence: 1,
+    updatedAt: Date.now(),
+    state,
+  })
+  return host
+}
 
 function fixture() {
   const record: ChildRecord = {
@@ -103,14 +129,70 @@ describe("parent completion", () => {
     const host = fixture()
     await expect(finishChild(host, "unknown", "verified")).rejects.toThrow("Unknown")
     await expect(finishChild(host, "child", " ")).rejects.toThrow("summary")
-    for (const state of ["running", "launching"] as const) {
+    for (const state of ["launching", "failed", "interrupted", "orphaned"] as const) {
       host.records.get("child")!.state = state
       await expect(finishChild(host, "child", "verified")).rejects.toThrow("awaiting parent")
     }
+    const working = await runningFixture("working")
+    await expect(finishChild(working, "child", "verified")).rejects.toThrow("must be idle")
     expect(tmuxExec).not.toHaveBeenCalled()
   })
 
-  it("closes a real child pane without closing its sibling", async () => {
+  it.each(["starting", "working", "done"] as const)(
+    "rejects fresh %s activity despite a cached waiting state",
+    async (state) => {
+      const host = await runningFixture(state)
+      host.records.get("child")!.activity = {
+        version: 1,
+        childId: "child",
+        sequence: 0,
+        updatedAt: 1,
+        state: "waiting",
+      }
+      await expect(finishChild(host, "child", "verified")).rejects.toThrow("must be idle")
+      expect(tmuxExec).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(["missing", "malformed", "wrong-child"])(
+    "rejects %s activity without closing the child",
+    async (kind) => {
+      const host = await runningFixture()
+      const path = join(host.records.get("child")!.artifactDir, "activity.json")
+      if (kind === "missing") await rm(path)
+      else
+        await writeFile(
+          path,
+          kind === "malformed"
+            ? "{"
+            : JSON.stringify({
+                version: 1,
+                childId: "other",
+                sequence: 1,
+                updatedAt: 1,
+                state: "waiting",
+              }),
+        )
+      await expect(finishChild(host, "child", "verified")).rejects.toThrow()
+      expect(tmuxExec).not.toHaveBeenCalled()
+      expect(host.records.get("child")!.state).toBe("running")
+    },
+  )
+
+  it("rejects a registry change during the activity read", async () => {
+    const host = await runningFixture()
+    const read = protocol.readActivity
+    vi.spyOn(protocol, "readActivity").mockImplementationOnce(async (...args) => {
+      const activity = await read(...args)
+      const child = host.records.get("child")!
+      host.records.set("child", { ...child, revision: child.revision + 1 })
+      return activity
+    })
+    await expect(finishChild(host, "child", "verified")).rejects.toThrow("changed")
+    expect(tmuxExec).not.toHaveBeenCalled()
+  })
+
+  it("closes a real idle child pane without an ask or closing its sibling", async () => {
     const exec = promisify(execFile)
     const socket = `pi-suba-finish-${process.pid}`
     const run = async (args: string[]) =>
@@ -136,7 +218,7 @@ describe("parent completion", () => {
         sibling,
         "sleep 60",
       ])
-      const host = fixture()
+      const host = await runningFixture()
       host.records.get("child")!.paneId = child
       vi.mocked(tmuxExec).mockImplementation(run)
       await finishChild(host, "child", "Verified integration")

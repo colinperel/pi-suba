@@ -12,7 +12,7 @@ import { Type } from "typebox"
 import { resolveChildExtensionSource, type SubaConfig } from "../shared/config.ts"
 import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
-import { THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
+import { readActivity, THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
 import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
@@ -60,8 +60,15 @@ export async function finishChild(
     host.persist(previous)
     return previous
   }
-  if (previous.state !== "awaiting-parent")
-    throw new Error(`Subagent ${id} must be awaiting parent guidance before finishing`)
+  if (previous.state !== "awaiting-parent") {
+    if (previous.state !== "running")
+      throw new Error(`Subagent ${id} must be idle or awaiting parent guidance before finishing`)
+    const activity = await readActivity(join(previous.artifactDir, "activity.json"), id)
+    if (host.records.get(id) !== previous)
+      throw new Error(`Subagent ${id} changed while checking activity; retry finishing`)
+    if (activity.state !== "waiting")
+      throw new Error(`Subagent ${id} must be idle or awaiting parent guidance before finishing`)
+  }
   if (!previous.paneId) throw new Error(`Subagent ${id} has no pane to close`)
   const completed: ChildRecord = {
     ...previous,
@@ -547,7 +554,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_finish",
     label: "Suba Finish",
     description:
-      "Record a verified result and close a waiting child's pane. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
+      "Record a verified result and close an idle or awaiting-parent child's pane. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
     parameters: Type.Object({
       id: Type.String(),
       result: Type.String({ description: "Parent-verified completion summary to retain." }),
