@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  AgentSession,
   createEventBus,
+  SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent"
@@ -305,6 +307,53 @@ describe("parent activity event bus", () => {
     },
   )
 
+  it.each([false, true])(
+    "records progress without waking or steering Pi (streaming=%s)",
+    async (isStreaming) => {
+      const child = await record("progress")
+      const parent = await harness([child])
+      await parent.emit("session_start")
+      await writeEvent(child.artifactDir, {
+        version: 1,
+        childId: child.id,
+        sequence: 1,
+        timestamp: 1,
+        type: "notify",
+        message: "Fixture capture complete",
+      })
+      await parent.tick()
+      const [message, options] = parent.sendMessage.mock.calls[0]!
+      const sessionManager = SessionManager.inMemory(root)
+      const runtime = {
+        isStreaming,
+        agent: { state: { messages: [] }, steer: vi.fn(), followUp: vi.fn() },
+        sessionManager,
+        _runAgentPrompt: vi.fn(),
+        _emit: vi.fn(),
+      }
+      await AgentSession.prototype.sendCustomMessage.call(
+        runtime as unknown as AgentSession,
+        message,
+        options,
+      )
+      expect(runtime._runAgentPrompt).not.toHaveBeenCalled()
+      expect(runtime.agent.steer).not.toHaveBeenCalled()
+      expect(runtime.agent.followUp).not.toHaveBeenCalled()
+      expect(runtime.agent.state.messages).toEqual([expect.objectContaining(message)])
+      expect(sessionManager.buildSessionContext().messages).toEqual([
+        expect.objectContaining(message),
+      ])
+      expect(sessionManager.getEntries()).toEqual([
+        expect.objectContaining({ type: "custom_message", ...message }),
+      ])
+      expect(runtime._emit.mock.calls.map(([event]) => event.type)).toEqual([
+        "message_start",
+        "message_end",
+      ])
+      expect((await parent.list())[0]!.state).toBe("running")
+    },
+  )
+
   it.each(["notify", "ask", "ping"] as const)(
     "restores and persists %s events without redelivery",
     async (type) => {
@@ -324,8 +373,9 @@ describe("parent activity event bus", () => {
         expect.objectContaining({
           content: expect.stringContaining("checkpoint"),
           details: expect.objectContaining({ type: expectedType }),
+          display: true,
         }),
-        { deliverAs: "steer", triggerTurn: true },
+        { deliverAs: "steer", triggerTurn: type !== "notify" },
       )
       const persisted = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
       expect(persisted.lastEventSequence).toBe(1)

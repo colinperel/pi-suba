@@ -111,7 +111,7 @@ export default async function (pi: ExtensionAPI) {
               report: record.report,
             } satisfies SubagentMessageDetails,
           },
-          { deliverAs: "steer", triggerTurn: true },
+          { deliverAs: "steer", triggerTurn: notify.type !== "notify" },
         )
     },
     activity: (record: ChildRecord) => {

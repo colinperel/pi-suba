@@ -256,9 +256,11 @@ updated extension to consume explicit reports from updated children.
 When a child calls `suba_ask`, it enters an awaiting-parent state. The parent receives the question
 and can answer with `suba_send`. You can also focus the child's tmux pane and type directly into it.
 
-Notifications and questions are both recorded in event artifacts and delivered to the parent
-through the same mechanism, starting a parent turn. `suba_notify` does not pause the child
-or require a response. `suba_ask` stops the current run until guidance arrives.
+Notifications are recorded and displayed in the parent transcript without starting or
+steering a parent run. They remain available in context for the next model request.
+Use `suba_notify` for nonurgent updates and continue working. Use `suba_ask` for blockers,
+decisions, or urgent issues that need parent action now; it wakes the parent and pauses
+the child until guidance arrives. Results also wake the parent.
 
 Historical `ping` event files remain supported as blocking questions, including on parent
 restoration. Existing transcript calls to `suba_ping` remain historical records, but the old

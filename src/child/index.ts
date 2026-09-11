@@ -97,7 +97,7 @@ export default function (pi: ExtensionAPI) {
     name: "suba_notify",
     label: "Suba Notify",
     description:
-      "Send the parent a progress update or finding and continue working. No response is required. Use suba_ask instead only when blocked on parent guidance.",
+      "Record a nonurgent update and continue working. This does not wake the parent. Use suba_ask when the parent needs to act now.",
     parameters: Type.Object({
       message: Type.String({ description: "Progress update or finding" }),
     }),
@@ -109,7 +109,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: "Parent notified. Continue your assigned work; no acknowledgement is required.",
+            text: "Update recorded without waking the parent. Continue working.",
           },
         ],
         details: {},
@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
     name: "suba_ask",
     label: "Suba Ask",
     description:
-      "Ask the parent for a decision or missing information only when blocked. The current run stops until guidance arrives. For progress updates, use suba_notify instead.",
+      "Get parent attention for a blocker, decision, or urgent issue. Pauses the current run until guidance arrives.",
     parameters: Type.Object({
       message: Type.String({ description: "Question or requested parent action" }),
     }),
