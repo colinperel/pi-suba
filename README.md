@@ -96,9 +96,11 @@ example, an Aven assignment can give the task reference and workspace with `aven
 `aven show REF --full` as read commands. A reference without enough information to find and read
 it is not self-contained.
 
-Put temporary coordination in the launch prompt. Create a handoff only for reusable context not
-already available from those sources, such as a shared design decision or cross-task constraint.
-Create it before launching dependent children, and name the file and its purpose in their tasks.
+Put task-relevant coordination in the launch prompt. Include coordination only when it affects
+the child's scope, dependencies, shared resources, or authority. Omit unrelated parent activity.
+Create a handoff only for reusable context not already available from those sources, such as a
+shared design decision or cross-task constraint. Create it before launching dependent children,
+and name the file and its purpose in their tasks.
 
 Use `context: "fork"` only when essential conversation history cannot be supplied in the task or
 referenced material. Forking copies the parent branch up to, but not including, the latest user
@@ -344,10 +346,12 @@ unless the user requests delegated review. Use an active skill's specified
 consultation mechanism.
 
 Use fresh context with a self-contained task or authoritative references,
-repository/workspace context, and commands to read them. Put temporary
+repository/workspace context, and commands to read them. Put task-relevant
 coordination in the launch prompt; use handoffs only for additional reusable
-context. Fork only when essential conversation history cannot be supplied this
-way. The latest assignment defines scope; inherited history is background.
+context. Include coordination only when it affects the child's scope,
+dependencies, shared resources, or authority. Omit unrelated parent activity.
+Fork only when essential conversation history cannot be supplied this way.
+The latest assignment defines scope; inherited history is background.
 
 Resume when accumulated knowledge is costly to reconstruct. Prefer a fresh
 child, or parent execution when its role permits, for a self-contained, fully
