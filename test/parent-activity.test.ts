@@ -624,7 +624,25 @@ describe("parent activity event bus", () => {
     expect(sendToPane).not.toHaveBeenCalled()
   })
 
-  it("does not resurrect a child that finishes while guidance is being sent", async () => {
+  it("refreshes completion before submitting guidance without waiting for a poll", async () => {
+    const child = await record("completed-before-send")
+    const parent = await harness([child])
+    await parent.emit("session_start")
+    await writeEvent(child.artifactDir, {
+      version: 1,
+      childId: child.id,
+      sequence: 1,
+      timestamp: 2,
+      type: "completed",
+      report: { summary: "Finished review" },
+    })
+    await expect(parent.execute("suba_send", { id: child.id, message: "late" })).rejects.toThrow(
+      "Use suba_resume",
+    )
+    expect(sendToPane).not.toHaveBeenCalled()
+  })
+
+  it("reports uncertain processing when completion races guidance submission", async () => {
     const child = await record("send", { state: "awaiting-parent" })
     await activity(child, "waiting")
     const parent = await harness([child])
@@ -637,6 +655,7 @@ describe("parent activity event bus", () => {
         }),
     )
     const sending = parent.execute("suba_send", { id: child.id, message: "continue" })
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"))
     await writeEvent(child.artifactDir, {
       version: 1,
       childId: child.id,
@@ -644,9 +663,8 @@ describe("parent activity event bus", () => {
       timestamp: 2,
       type: "completed",
     })
-    await parent.tick()
     release()
-    await sending
+    await expect(sending).rejects.toThrow("Processing is not confirmed. Use suba_resume")
     expect((await parent.list())[0]?.state).toBe("completed")
     expect(parent.snapshots).toEqual([{ activeCount: 0 }])
   })

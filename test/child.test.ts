@@ -1,7 +1,17 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { Agent } from "@earendil-works/pi-agent-core"
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type Model,
+} from "@earendil-works/pi-ai"
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import childExtension from "../src/child/index.ts"
 import { readActivity, readEvents } from "../src/shared/protocol.ts"
@@ -35,6 +45,206 @@ afterEach(async () => {
 })
 
 describe("child completion", () => {
+  it.each(["steer", "followUp"] as const)(
+    "delivers a corrected report through the real agent %s queue",
+    async (queue) => {
+      const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-agent-queue-"))
+      temporaryDirectories.push(artifactDir)
+      process.env.SUBA_CHILD_ID = "agent"
+      process.env.SUBA_ARTIFACT_DIR = artifactDir
+      process.env.SUBA_AUTO_COMPLETE = "0"
+      const handlers = new Map<string, Handler>()
+      const tools: ToolDefinition[] = []
+      childExtension({
+        registerTool(tool: ToolDefinition) {
+          tools.push(tool)
+        },
+        on(name: string, handler: Handler) {
+          handlers.set(name, handler)
+        },
+      } as unknown as ExtensionAPI)
+      const model: Model<"openai-completions"> = {
+        id: "test",
+        name: "test",
+        api: "openai-completions",
+        provider: "test",
+        baseUrl: "http://unused.invalid",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 10000,
+        maxTokens: 1000,
+      }
+      let calls = 0
+      let shutdowns = 0
+      const agent = new Agent({
+        initialState: { model },
+        streamFn: async (_model, context) => {
+          calls++
+          expect(calls).toBeLessThanOrEqual(2)
+          expect(await readEvents(artifactDir, 0)).toEqual([])
+          if (calls === 1) {
+            await handlers.get("input")!({}, ctx)
+            agent[queue]({ role: "user", content: "Qualify the severity", timestamp: Date.now() })
+          } else {
+            expect(
+              context.messages.some(
+                (m) => m.role === "user" && m.content === "Qualify the severity",
+              ),
+            ).toBe(true)
+          }
+          const message: AssistantMessage = {
+            role: "assistant",
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            content: [
+              {
+                type: "toolCall",
+                id: `done-${calls}`,
+                name: "suba_done",
+                arguments: { summary: calls === 1 ? "blocker" : "optional hardening" },
+              },
+            ],
+            stopReason: "toolUse",
+            timestamp: Date.now(),
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          }
+          const stream = createAssistantMessageEventStream()
+          stream.push({ type: "done", reason: "toolUse", message })
+          stream.end()
+          return stream
+        },
+      })
+      const ctx = {
+        hasPendingMessages: () => agent.hasQueuedMessages(),
+        sessionManager: {
+          getBranch: () => agent.state.messages.map((message) => ({ type: "message", message })),
+        },
+        shutdown() {
+          shutdowns++
+        },
+        abort() {
+          agent.abort()
+        },
+      } as unknown as ExtensionContext
+      agent.state.tools = tools.map((tool) => ({
+        ...tool,
+        execute: (id, args, signal, update) => tool.execute(id, args, signal, update, ctx),
+      }))
+      agent.subscribe(async (event) => {
+        await handlers.get(event.type)?.(event, ctx)
+      })
+      await agent.prompt("Review")
+      expect(shutdowns).toBe(0)
+      await handlers.get("agent_settled")!({}, ctx)
+      expect(calls).toBe(2)
+      expect(shutdowns).toBe(1)
+      expect(await readEvents(artifactDir, 0)).toMatchObject([
+        { type: "completed", report: { summary: "optional hardening" } },
+      ])
+    },
+  )
+
+  it.each(["0", "1"])(
+    "processes queued guidance before completing (automatic=%s)",
+    async (automatic) => {
+      const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-queued-"))
+      temporaryDirectories.push(artifactDir)
+      process.env.SUBA_CHILD_ID = "queued"
+      process.env.SUBA_ARTIFACT_DIR = artifactDir
+      process.env.SUBA_AUTO_COMPLETE = automatic
+      const handlers = new Map<string, Handler>()
+      const tools = new Map<string, RegisteredTool>()
+      childExtension({
+        registerTool(tool: RegisteredTool & { name: string }) {
+          tools.set(tool.name, tool)
+        },
+        on(name: string, handler: Handler) {
+          handlers.set(name, handler)
+        },
+      } as unknown as ExtensionAPI)
+      let pending = true
+      let shutdowns = 0
+      let aborts = 0
+      const ctx = {
+        hasPendingMessages: () => pending,
+        sessionManager: { getBranch: () => [] },
+        shutdown() {
+          shutdowns++
+        },
+        abort() {
+          aborts++
+        },
+      } as unknown as ExtensionContext
+      const done = (summary: string) =>
+        tools
+          .get("suba_done")!
+          .execute("call", { summary }, new AbortController().signal, () => {}, ctx)
+      // The input hook runs on receipt, before the current response calls suba_done.
+      await handlers.get("input")!({}, ctx)
+      await done("Initial finding: blocker")
+      await handlers.get("agent_settled")!({}, ctx)
+      expect(shutdowns).toBe(0)
+      expect(await readEvents(artifactDir, 0)).toEqual([])
+
+      pending = false
+      await handlers.get("message_start")!({ message: { role: "user" } }, ctx)
+      await handlers.get("agent_start")!({}, ctx)
+      expect(aborts).toBe(0)
+      await done("Qualified finding: optional hardening")
+      await handlers.get("agent_settled")!({}, ctx)
+      expect(await readEvents(artifactDir, 0)).toMatchObject([
+        { type: "completed", report: { summary: "Qualified finding: optional hardening" } },
+      ])
+      expect(shutdowns).toBe(1)
+      await handlers.get("agent_start")!({}, ctx)
+      expect(aborts).toBe(1)
+      await handlers.get("agent_settled")!({}, ctx)
+      expect((await readEvents(artifactDir, 0)).length).toBe(1)
+    },
+  )
+
+  it("invalidates a pending report on delivery, not on receipt, of new guidance", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-stale-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "stale"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = "0"
+    const handlers = new Map<string, Handler>()
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const ctx = {
+      hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => [] },
+      shutdown() {
+        throw new Error("must not deliver stale report")
+      },
+    } as unknown as ExtensionContext
+    await handlers.get("input")!({}, ctx)
+    await tools
+      .get("suba_done")!
+      .execute("call", { summary: "stale" }, new AbortController().signal, () => {}, ctx)
+    await handlers.get("message_start")!({ message: { role: "user" } }, ctx)
+    await handlers.get("agent_settled")!({}, ctx)
+    expect(await readEvents(artifactDir, 0)).toEqual([])
+    expect((await readActivity(join(artifactDir, "activity.json"), "stale")).state).toBe("waiting")
+  })
+
   it.each([
     { summary: "  Exact report.\n\nSecond paragraph.  " },
     { summary: "Report", artifacts: ["missing/evidence.md", "/tmp/report file.md"] },
@@ -44,14 +254,18 @@ describe("child completion", () => {
     process.env.SUBA_CHILD_ID = "explicit"
     process.env.SUBA_ARTIFACT_DIR = artifactDir
     const tools = new Map<string, RegisteredTool>()
+    const handlers = new Map<string, Handler>()
     childExtension({
       registerTool(tool: RegisteredTool & { name: string }) {
         tools.set(tool.name, tool)
       },
-      on() {},
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
     } as unknown as ExtensionAPI)
     let shutdowns = 0
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: {
         getBranch() {
           throw new Error("must not extract prose")
@@ -76,6 +290,9 @@ describe("child completion", () => {
       expect(shutdowns).toBe(0)
     }
     expect((await execute(report)).terminate).toBe(true)
+    expect(await readEvents(artifactDir, 0)).toEqual([])
+    expect(shutdowns).toBe(0)
+    await handlers.get("agent_settled")!({}, ctx)
     expect(await readEvents(artifactDir, 0)).toMatchObject([
       { type: "completed", sequence: 1, report },
     ])
@@ -100,6 +317,7 @@ describe("child completion", () => {
       usage: { input, cacheRead: 100, cacheWrite: 20 },
     })
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => [{ type: "message", message: message(1000) }] },
       shutdown() {},
     } as unknown as ExtensionContext
@@ -130,6 +348,7 @@ describe("child completion", () => {
       },
     } as unknown as ExtensionAPI)
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => [] },
       shutdown() {},
     } as unknown as ExtensionContext
@@ -176,6 +395,7 @@ describe("child completion", () => {
       },
     } as unknown as ExtensionAPI)
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => [] },
       shutdown() {},
     } as unknown as ExtensionContext
@@ -223,6 +443,7 @@ describe("child completion", () => {
 
     let shutdowns = 0
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => [] },
       shutdown: () => {
         shutdowns += 1
@@ -272,6 +493,7 @@ describe("child completion", () => {
 
     let shutdowns = 0
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => [] },
       shutdown: () => {
         shutdowns += 1
@@ -290,6 +512,7 @@ describe("child completion", () => {
       ?.execute("call", { summary: "done" }, new AbortController().signal, () => undefined, ctx)
 
     expect(result?.terminate).toBe(true)
+    await handlers.get("agent_settled")!({}, ctx)
     expect(shutdowns).toBe(1)
     expect((await readEvents(artifactDir, 0)).map((event) => event.type)).toEqual(["completed"])
   })
@@ -325,6 +548,7 @@ describe("child completion", () => {
     ]
     let shutdowns = 0
     const ctx = {
+      hasPendingMessages: () => false,
       sessionManager: { getBranch: () => branch },
       shutdown: () => {
         shutdowns += 1

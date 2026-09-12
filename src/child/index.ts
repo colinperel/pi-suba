@@ -21,6 +21,7 @@ export default function (pi: ExtensionAPI) {
   const activity = new ActivityRecorder(childId, artifactDir)
   const events = new EventWriter(childId, artifactDir)
   let lifecycle: Lifecycle = "running"
+  let pendingReport: CompletionReport | undefined
 
   const latestAssistant = (ctx: ExtensionContext): AssistantState | undefined => {
     const branch = ctx.sessionManager.getBranch() as Array<{
@@ -68,7 +69,7 @@ export default function (pi: ExtensionAPI) {
     name: "suba_done",
     label: "Suba Done",
     description:
-      "Finish immediately with the supplied nonempty summary and optional artifact path references. No preceding assistant prose is needed. Artifacts are not read or executed; completion does not mean parent acceptance.",
+      "Submit a final nonempty summary and optional artifact references without preceding prose. Completion waits for queued guidance; if guidance arrives, address it and submit an updated report. Artifacts are not read or executed; completion does not mean parent acceptance.",
     parameters: Type.Object({
       summary: Type.String({
         minLength: 1,
@@ -82,12 +83,18 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params, _signal, _update, ctx) {
+    async execute(_id, params) {
       validateCompletionReport(params)
-      if (!(await finish(ctx, params)))
+      if (lifecycle !== "running")
         throw new Error(`suba_done is unavailable while lifecycle is ${lifecycle}`)
+      pendingReport = params
       return {
-        content: [{ type: "text", text: "Subagent completion recorded. Shutting down." }],
+        content: [
+          {
+            type: "text",
+            text: "Final report recorded for delivery once queued guidance has been processed.",
+          },
+        ],
         details: params,
         terminate: true,
       }
@@ -156,7 +163,17 @@ export default function (pi: ExtensionAPI) {
   const working = (update: () => Promise<void>) => {
     if (lifecycle === "running") return update()
   }
-  pi.on("agent_start", () => working(() => activity.model()))
+  pi.on("agent_start", (_event, ctx) => {
+    if (lifecycle === "terminated" || lifecycle === "completing") {
+      ctx.abort()
+      return
+    }
+    return working(() => activity.model())
+  })
+  pi.on("message_start", (event) => {
+    // Input can be queued before suba_done but delivered after its tool result.
+    if (event.message.role === "user") pendingReport = undefined
+  })
   pi.on("turn_start", () => working(() => activity.model()))
   pi.on("before_provider_request", () => working(() => activity.model()))
   pi.on("message_end", async (event) => {
@@ -170,8 +187,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("model_select", (event) => activity.selected(event.model.provider, event.model.id))
   pi.on("thinking_level_select", (event) => activity.thinking(event.level as ThinkingLevel))
   pi.on("agent_settled", async (_event, ctx) => {
-    if (lifecycle !== "running") return
-    if (automatic && !latestAssistantWasAborted(ctx)) await finish(ctx)
+    if (lifecycle !== "running" || ctx.hasPendingMessages()) return
+    if (pendingReport) {
+      await finish(ctx, pendingReport)
+      pendingReport = undefined
+    } else if (automatic && !latestAssistantWasAborted(ctx)) await finish(ctx)
     else await activity.waiting()
   })
   pi.on("session_shutdown", async () => {

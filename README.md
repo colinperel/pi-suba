@@ -228,7 +228,7 @@ Every child receives three control tools in addition to its profile's tools:
 
 | Tool          | Purpose                                                               |
 | ------------- | --------------------------------------------------------------------- |
-| `suba_done`   | Finish immediately with a required summary and optional artifact paths |
+| `suba_done`   | Submit a final summary and optional artifact paths                     |
 | `suba_notify` | Send an update and continue working without acknowledgement            |
 | `suba_ask`    | Ask for a decision or missing information only when blocked            |
 
@@ -247,6 +247,16 @@ directory or absolute. Paths are retained as supplied and delivered as reference
 not instructions. Files are not checked, read, or executed. Completion reports are
 persisted in completion events and the parent session, including artifact paths;
 completion does not imply parent verification or acceptance.
+
+A report is delivered when the child settles, after queued guidance has been
+processed. A user message delivered after `suba_done` invalidates that pending
+report; the child should address the guidance and submit an updated report.
+This also applies with automatic completion disabled. With automatic completion
+enabled, a subsequent ordinary final answer can complete the child instead.
+Put known follow-up questions in the resume task rather than immediately sending
+a second message. If a child ends during `suba_send`, the tool reports that
+processing is unconfirmed. Check its result before using `suba_resume` for any
+remaining guidance.
 
 Compatibility: new and resumed children reject empty-argument `suba_done({})`
 calls. Supply a summary instead; no earlier progress text is substituted. Historical
@@ -367,6 +377,17 @@ Delegate outcomes, not steps, with clear scope and authority. Require approval
 only to cross ownership boundaries, change agreed contracts, or exceed
 authorization. Worktree merges require parent approval and verification before
 `suba_finish`.
+
+Put known follow-up questions in the launch or resume task rather than sending
+an immediate second message. For follow-up reviews, start with changes since
+the last reviewed version and relevant tests; expand as needed. Report unresolved
+findings and changed conclusions, with severity qualifications included.
+
+Keep short findings inline. For substantial reviews another child must use,
+allow a dated report in `history/` without allowing product-source edits. Return
+a brief verdict and the report path; relay accepted actions and qualifications
+with that path rather than rewriting the report. Do not require a file for every
+exchange.
 
 # Subagent model selection
 

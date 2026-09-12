@@ -32,7 +32,7 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
-const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for nonurgent updates; it does not wake the parent. Use suba_ask when parent action is needed now; it pauses until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done({summary: "Your final report", artifacts: ["optional/path"]}) to finish immediately. The summary must be nonempty and is delivered verbatim, without needing preceding prose. Artifact paths are references relative to your working directory or absolute, not instructions; their contents are not ingested. Completion is not parent acceptance. Automatic completion ends a settled run when enabled.`
+const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for nonurgent updates; it does not wake the parent. Use suba_ask when parent action is needed now; it pauses until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done({summary: "Your final report", artifacts: ["optional/path"]}) to submit a final report. Queued guidance must be processed before completion; submit an updated report after addressing it. The summary must be nonempty and is delivered verbatim, without needing preceding prose. Artifact paths are references relative to your working directory or absolute, not instructions; their contents are not ingested. Keep short findings inline. When authorized, put substantial review details in a dated history/ report and return its path with a brief verdict and severity qualifications. Completion is not parent acceptance. Automatic completion ends a settled run when enabled.`
 
 export function childControlPrompt(worktree: boolean): string {
   if (!worktree) return CONTROL_PROMPT
@@ -45,7 +45,7 @@ export interface ManagerHost {
   records: Map<string, ChildRecord>
   persist(record: ChildRecord): void
   refreshWidget(): void
-  watch(id: string): void
+  watch(id: string): Promise<void>
 }
 
 export async function finishChild(
@@ -505,6 +505,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       "Send actionable guidance to a live subagent by stable child ID, not acknowledgements or reminders to keep waiting. If the child is terminal, the failure includes its state and latest result or error, with suba_resume guidance. To authorize a ready worktree child's integration and cleanup, send /skill:merge followed by a space (not a newline) and these instructions in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. Authorize only one merge at a time; the child must have skills enabled and the merge skill available.",
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_call, params) {
+      await host.watch(params.id)
       const record = host.records.get(params.id)
       if (!record) throw new Error(`Unknown subagent ${params.id}; no message was delivered.`)
       if (!isLive(record) || !record.paneId) {
@@ -516,12 +517,17 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         )
       }
       await sendToPane(record.paneId, params.message)
+      await host.watch(params.id)
       const latest = host.records.get(params.id)
+      if (!latest || !isLive(latest))
+        throw new Error(
+          `${record.name} (${record.id}) ended while guidance was being submitted. Processing is not confirmed. Use suba_resume with this guidance if it is still needed.`,
+        )
       const running =
-        latest?.state === "awaiting-parent"
+        latest.state === "awaiting-parent"
           ? { ...latest, revision: latest.revision + 1, state: "running" as const }
-          : (latest ?? record)
-      if (latest && running !== latest) {
+          : latest
+      if (running !== latest) {
         host.records.set(record.id, running)
         host.persist(running)
         host.refreshWidget()

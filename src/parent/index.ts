@@ -69,7 +69,7 @@ export default async function (pi: ExtensionAPI) {
       publishActivity()
     },
     refreshWidget,
-    watch: (id: string) => void watcher.check(id),
+    watch: (id: string) => watcher.check(id),
   } satisfies ManagerHost
   const callbacks = {
     list: () => [...records.values()],
