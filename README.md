@@ -353,41 +353,38 @@ This is a reasonable starting point:
 ```markdown
 # Subagent delegation
 
-Use suba for explicit delegation requests or a separate workstream the parent
-will not also perform, not merely for second opinions, self-review, or
-validation. Keep single-target reviews and investigations with the parent
-unless the user requests delegated review. Use an active skill's specified
-consultation mechanism.
+Use suba only when the user explicitly requests subagents (including `/suba`).
+A skill invocation alone does not authorize suba; follow its specified agent or
+consultation mechanism. Keep single-target reviews and investigations with the
+parent unless delegated review is requested.
 
-Use fresh context with a self-contained task or authoritative references,
-repository/workspace context, and commands to read them. Put task-relevant
-coordination in the launch prompt; use handoffs only for additional reusable
-context. Include coordination only when it affects the child's scope,
-dependencies, shared resources, or authority. Omit unrelated parent activity.
-Fork only when essential conversation history cannot be supplied this way.
-The latest assignment defines scope; inherited history is background.
+Delegate a bounded outcome with scope, ownership, authority, acceptance
+criteria, and relevant paths. Include known follow-ups and only coordination
+that affects the assignment. Let children resolve ordinary implementation
+choices.
 
-Resume when accumulated knowledge is costly to reconstruct. Prefer a fresh
-child, or parent execution when its role permits, for a self-contained, fully
-diagnosed mechanical correction or a different workstream. Completion or phase
-boundaries alone do not justify restarting. Last-request context-token counts,
-when available, are a decision aid, not a cutoff.
+Prefer fresh, self-contained context. Fork only when essential history cannot
+be supplied otherwise. Resume when retained knowledge is worth the context
+cost; handle fully diagnosed small corrections directly when your role permits.
+Continue with fresh context when a concise handoff of the current commit,
+decisions, remaining work, and relevant paths is cheaper than retaining the
+session.
 
-Delegate outcomes, not steps, with clear scope and authority. Require approval
-only to cross ownership boundaries, change agreed contracts, or exceed
-authorization. Worktree merges require parent approval and verification before
-`suba_finish`.
+Keep tool output bounded: summarize successful checks and retain verbose logs
+outside context; include relevant failure excerpts. Validate affected behavior
+during iteration and run required full checks at integration gates. Include
+these constraints in child assignments that involve testing.
 
-Put known follow-up questions in the launch or resume task rather than sending
-an immediate second message. For follow-up reviews, start with changes since
-the last reviewed version and relevant tests; expand as needed. Report unresolved
-findings and changed conclusions, with severity qualifications included.
+Request review of a stable revision after known blockers are fixed. Batch
+corrections before re-review and focus follow-ups on the changed code and tests.
+Batch actionable guidance; reference reports and finding IDs rather than
+rewriting them, preserving accepted priorities and qualifications. Keep short
+findings inline; use dated history/ reports when another agent needs substantial
+detail. Distinguish inspected evidence, executed results, and recommendations.
 
-Keep short findings inline. For substantial reviews another child must use,
-allow a dated report in `history/` without allowing product-source edits. Return
-a brief verdict and the report path; relay accepted actions and qualifications
-with that path rather than rewriting the report. Do not require a file for every
-exchange.
+Require approval for changes to ownership, agreed contracts, or authorization.
+Authorize worktree merges individually, verify integration, then `suba_finish`.
+Follow tool instructions for the merge protocol.
 
 # Subagent model selection
 
