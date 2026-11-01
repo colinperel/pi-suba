@@ -4,6 +4,7 @@ import { subaDirectory } from "../shared/paths.ts"
 import type { CompletionReport, ChildActivity, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
 import type { WorkmuxWorktree } from "../shared/workmux.ts"
+import type { TerminalTarget } from "../shared/terminal.ts"
 
 export type RegistryState =
   | "launching"
@@ -30,6 +31,8 @@ export interface ChildRecord {
   sessionFile: string
   artifactDir: string
   paneId?: string
+  target?: TerminalTarget
+  runId?: string
   name: string
   cwd: string
   worktree?: WorkmuxWorktree

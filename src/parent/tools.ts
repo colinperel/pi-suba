@@ -14,7 +14,14 @@ import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
 import { readActivity, THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
-import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
+import {
+  checkTerminal,
+  closeTerminal,
+  openTerminal,
+  selectTerminal,
+  UncertainTerminalLaunchError,
+} from "../shared/terminal.ts"
+import { launchScriptPath, shellQuote, waitForReceipt, writeCommand } from "../shared/control.ts"
 import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive, isResumable } from "./registry.ts"
@@ -31,12 +38,11 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
   description:
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
-const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for nonurgent updates; it does not wake the parent. Use suba_ask when parent action is needed now; it pauses until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done({summary: "Your final report", artifacts: ["optional/path"]}) to submit a final report. Queued guidance must be processed before completion; submit an updated report after addressing it. The summary must be nonempty and is delivered verbatim, without needing preceding prose. Artifact paths are references relative to your working directory or absolute, not instructions; their contents are not ingested. Keep short findings inline. When authorized, put substantial review details in a dated history/ report and return its path with a brief verdict and severity qualifications. Completion is not parent acceptance. Automatic completion ends a settled run when enabled.`
 
 export function childControlPrompt(worktree: boolean): string {
   if (!worktree) return CONTROL_PROMPT
-  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ask and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and close this separately managed pane. Workmux handles worktree cleanup, not this pane.`
+  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ask and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and stop this separately managed child. Workmux handles worktree cleanup, not the child process.`
 }
 
 export interface ManagerHost {
@@ -69,7 +75,7 @@ export async function finishChild(
     if (activity.state !== "waiting")
       throw new Error(`Subagent ${id} must be idle or awaiting parent guidance before finishing`)
   }
-  if (!previous.paneId) throw new Error(`Subagent ${id} has no pane to close`)
+  if (!previous.runId && !previous.paneId) throw new Error(`Subagent ${id} has no process to close`)
   const completed: ChildRecord = {
     ...previous,
     revision: previous.revision + 1,
@@ -82,7 +88,15 @@ export async function finishChild(
   // Terminal records prevent in-flight watcher reads from overwriting completion.
   host.records.set(id, completed)
   try {
-    await tmuxExec(["kill-pane", "-t", previous.paneId])
+    if (previous.runId) {
+      const sequence = await writeCommand(previous.artifactDir, previous.runId, id, {
+        type: "shutdown",
+      })
+      await waitForReceipt(previous.artifactDir, previous.runId, sequence)
+      if (previous.target?.kind === "background") await closeTerminal(previous.target)
+    } else {
+      await closeTerminal({ kind: "tmux", id: previous.paneId! })
+    }
   } catch (error) {
     host.records.set(id, previous)
     throw error
@@ -97,7 +111,7 @@ export async function finishChild(
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in a split in the parent's current tmux window. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
+    "Launch a Pi subagent in a native split in tmux or Rex, or as a background process in other terminals. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -210,7 +224,7 @@ export function launchScript(
   const exports = Object.entries({ ...env, PI_CODING_AGENT_DIR: agentDirectory() })
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join("\n")
-  return `#!/bin/sh\n${exports}\nif cd ${shellQuote(cwd)}; then\n  ${invocation()} ${args.map(shellQuote).join(" ")}\n  exit_code=$?\nelse\n  exit_code=$?\nfi\nprintf '%s\\n' "$exit_code" > ${shellQuote(join(artifactDir, "process-exit.tmp"))}\nmv ${shellQuote(join(artifactDir, "process-exit.tmp"))} ${shellQuote(join(artifactDir, "process-exit"))}\nexit "$exit_code"\n`
+  return `#!/bin/sh\n${exports}\nprintf '%s\\n' "$$" > ${shellQuote(join(artifactDir, "process-pid.tmp"))}\nmv ${shellQuote(join(artifactDir, "process-pid.tmp"))} ${shellQuote(join(artifactDir, "process-pid"))}\nif cd ${shellQuote(cwd)}; then\n  ${invocation()} ${args.map(shellQuote).join(" ")}\n  exit_code=$?\nelse\n  exit_code=$?\nfi\nprintf '%s\\n' "$exit_code" > ${shellQuote(join(artifactDir, "process-exit.tmp"))}\nmv ${shellQuote(join(artifactDir, "process-exit.tmp"))} ${shellQuote(join(artifactDir, "process-exit"))}\nexit "$exit_code"\n`
 }
 
 type Theme = ExtensionContext["ui"]["theme"]
@@ -219,7 +233,8 @@ interface LaunchToolDetails {
   id: string
   name: string
   sessionFile: string
-  tmuxTarget?: string
+  terminalTarget?: string
+  tmuxTarget?: string // Historical tool results.
   profile: string
   model?: string
   thinking?: ThinkingLevel
@@ -267,16 +282,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     resume?: ChildRecord,
     signal?: AbortSignal,
   ): Promise<ChildRecord> => {
-    const parentPane = process.env.TMUX_PANE
-    if (!parentPane)
-      throw new Error(
-        "pi-suba requires the parent Pi session to run inside tmux (TMUX_PANE is unset)",
-      )
-    try {
-      await tmuxExec(["-V"])
-    } catch {
-      throw new Error("pi-suba requires tmux on PATH")
-    }
+    const terminal = selectTerminal()
+    await checkTerminal(terminal)
     if (process.env.SUBA_PI_EXECUTABLE?.trim()) {
       try {
         accessSync(resolve(process.env.SUBA_PI_EXECUTABLE), constants.X_OK)
@@ -316,6 +323,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       if (resume) {
         resultAfterEntry = await countSessionEntries(sessionFile)
         await rm(join(artifactDir, "process-exit"), { force: true })
+        await rm(join(artifactDir, "process-pid"), { force: true })
         await rm(join(artifactDir, "activity.json"), { force: true })
       } else {
         const parentSession = ctx.sessionManager.getSessionFile()
@@ -364,14 +372,17 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       if (resolvedLaunch.systemPrompt === "replace")
         args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
       else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
-      args.push(params.task)
-      const scriptPath = join(artifactDir, "launch.sh")
+      if (terminal.kind === "background") args.unshift("--mode", "rpc")
+      else args.push(params.task)
+      const runId = randomBytes(8).toString("hex")
+      const scriptPath = launchScriptPath(artifactDir, runId)
       await writeFile(
         scriptPath,
         launchScript(
           args,
           {
             SUBA_CHILD_ID: id,
+            SUBA_RUN_ID: runId,
             SUBA_ARTIFACT_DIR: artifactDir,
             SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
             SUBA_SESSION_FILE: sessionFile,
@@ -384,14 +395,14 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       await chmod(scriptPath, 0o700)
       let target
       try {
-        target = await createTarget(parentPane, shellQuote(scriptPath))
+        target = await openTerminal(terminal, scriptPath, artifactDir, params.task, runId)
       } catch (error) {
-        if (error instanceof PartialTmuxTargetError) {
+        if (error instanceof UncertainTerminalLaunchError) {
           rollbackArmed = false
           throw error
         }
         throw new Error(
-          `Could not create tmux target: ${error instanceof Error ? error.message : String(error)}`,
+          `Could not launch ${terminal.kind} child: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
         )
       }
@@ -402,7 +413,9 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         state: "running",
         sessionFile,
         artifactDir,
-        paneId: target.paneId,
+        paneId: target.kind === "tmux" ? target.id : undefined,
+        target,
+        runId,
         name: params.name,
         cwd,
         worktree,
@@ -419,7 +432,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         process.stderr.write(
-          `pi-suba: child ${id} is running in ${target.paneId}, but its registry record could not be persisted: ${message}\n`,
+          `pi-suba: child ${id} is running in ${target.kind} ${target.id}, but its registry record could not be persisted: ${message}\n`,
         )
       }
       host.refreshWidget()
@@ -451,6 +464,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           name: record.name,
           sessionFile: record.sessionFile,
           tmuxTarget: record.paneId,
+          terminalTarget: record.target?.id ?? record.paneId,
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
@@ -489,7 +503,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       const header = `${theme.fg("accent", "●")} ${theme.fg("toolTitle", theme.bold(details.name))}  ${theme.fg("accent", "running")}`
       const lines = [
         header,
-        theme.fg("dim", `  ${[meta, details.tmuxTarget].filter(Boolean).join(" · ")}`),
+        theme.fg(
+          "dim",
+          `  ${[meta, details.terminalTarget ?? details.tmuxTarget].filter(Boolean).join(" · ")}`,
+        ),
       ]
       if (expanded) {
         lines.push(theme.fg("dim", `  id ${details.id}`))
@@ -512,7 +529,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       await host.watch(params.id)
       const record = host.records.get(params.id)
       if (!record) throw new Error(`Unknown subagent ${params.id}; no message was delivered.`)
-      if (!isLive(record) || !record.paneId) {
+      if (!isLive(record)) {
         const detail = record.error || record.result
         const bounded = detail?.replace(/\s+/g, " ").trim().slice(0, 240)
         const suffix = bounded ? `\nLatest ${record.error ? "failure" : "result"}: ${bounded}` : ""
@@ -520,7 +537,15 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           `${record.name} (${record.id}) is ${record.state}. Your message was not delivered.${suffix}\nUse suba_resume with this child ID if further work is required.`,
         )
       }
-      await sendToPane(record.paneId, params.message)
+      if (!record.runId)
+        throw new Error(
+          "This child predates inbox messaging. Finish interacting with it directly, then use suba_resume after it exits.",
+        )
+      const sequence = await writeCommand(record.artifactDir, record.runId, record.id, {
+        type: "guidance",
+        message: params.message,
+      })
+      await waitForReceipt(record.artifactDir, record.runId, sequence)
       await host.watch(params.id)
       const latest = host.records.get(params.id)
       if (!latest || !isLive(latest))
@@ -564,7 +589,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_finish",
     label: "Suba Finish",
     description:
-      "Record a verified result and close an idle or awaiting-parent child's pane. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
+      "Record a verified result and stop an idle or awaiting-parent child. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
     parameters: Type.Object({
       id: Type.String(),
       result: Type.String({ description: "Parent-verified completion summary to retain." }),
@@ -583,7 +608,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_resume",
     label: "Suba Resume",
     description:
-      "Resume a completed or exited subagent thread in a split in the parent's current tmux window.",
+      "Resume a completed or exited subagent thread in a native tmux/Rex split, or in the background in other terminals.",
     parameters: Type.Object(
       {
         id: Type.String(),
@@ -600,13 +625,17 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       const record = await start({ ...params, name: previous.name }, ctx, previous, signal)
       return {
         content: [
-          { type: "text", text: `Resumed ${record.name} (${record.id}) in ${record.paneId}.` },
+          {
+            type: "text",
+            text: `Resumed ${record.name} (${record.id}) in ${record.target?.kind ?? "tmux"} ${record.target?.id ?? record.paneId}.`,
+          },
         ],
         details: {
           id: record.id,
           name: record.name,
           sessionFile: record.sessionFile,
           tmuxTarget: record.paneId,
+          terminalTarget: record.target?.id ?? record.paneId,
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
@@ -633,7 +662,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       ]
       if (meta)
         lines.push(
-          theme.fg("dim", `  ${meta}${details.tmuxTarget ? ` · ${details.tmuxTarget}` : ""}`),
+          theme.fg(
+            "dim",
+            `  ${meta}${(details.terminalTarget ?? details.tmuxTarget) ? ` · ${details.terminalTarget ?? details.tmuxTarget}` : ""}`,
+          ),
         )
       if (expanded) {
         lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
@@ -667,6 +699,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           name: record.name,
           profile: record.profile,
           sessionFile: record.sessionFile,
+          terminalTarget: record.target?.id ?? record.paneId,
+          terminal: record.target?.kind ?? "tmux",
           tmuxTarget: record.paneId,
           state: record.state,
           activity: record.activity,
@@ -733,7 +767,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
             new Text(
               theme.fg(
                 "dim",
-                `  id ${record.id}${record.tmuxTarget ? ` · pane ${record.tmuxTarget}` : ""}${record.resumable ? " · resumable" : ""}`,
+                `  id ${record.id}${record.terminalTarget ? ` · ${record.terminal} ${record.terminalTarget}` : ""}${record.resumable ? " · resumable" : ""}`,
               ),
               0,
               0,

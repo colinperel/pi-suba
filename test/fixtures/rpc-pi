@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+
+const root = process.env.SUBA_ARTIFACT_DIR
+let input = ""
+process.stdin.setEncoding("utf8")
+process.stdin.on("data", (chunk) => {
+  input += chunk
+  const end = input.indexOf("\n")
+  if (end < 0) return
+  const prompt = JSON.parse(input.slice(0, end))
+  mkdirSync(join(root, "events"), { recursive: true })
+  writeFileSync(join(root, "rpc-input.json"), JSON.stringify(prompt))
+  writeFileSync(join(root, "events", "000001-completed.json"), JSON.stringify({
+    version: 1, childId: process.env.SUBA_CHILD_ID, sequence: 1,
+    timestamp: Date.now(), type: "completed", report: { summary: prompt.message },
+  }))
+  process.exit(0)
+})

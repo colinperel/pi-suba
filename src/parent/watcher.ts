@@ -7,7 +7,8 @@ import {
   type ChildEvent,
 } from "../shared/protocol.ts"
 import { extractResult } from "../shared/sessions.ts"
-import { paneExists } from "../shared/tmux.ts"
+import { parentTeardownPath, processExists, rpcFailurePath } from "../shared/control.ts"
+import { closeTerminal, legacyPaneExists } from "../shared/terminal.ts"
 import type { ChildRecord } from "./registry.ts"
 
 export interface WatcherCallbacks {
@@ -76,6 +77,17 @@ export class ChildWatcher {
         this.callbacks.activity(record)
       }
     }
+    // A visible exit marker implies terminal events/RPC failures were already
+    // published. Take that snapshot before reading either outcome channel.
+    const exitPath = join(record.artifactDir, "process-exit")
+    let exitCode: number | undefined
+    let exitReadError: unknown
+    try {
+      exitCode = Number.parseInt((await readFile(exitPath, "utf8")).trim(), 10)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") exitReadError = error
+    }
+    if (!current()) return
     let events: ChildEvent[]
     try {
       events = await readEvents(record.artifactDir, record.lastEventSequence)
@@ -117,6 +129,9 @@ export class ChildWatcher {
       } else if (event.type === "failed") {
         record.state = "failed"
         record.error = event.error
+        const stored = this.callbacks.get(id)
+        if (record.target?.kind === "background") await closeTerminal(record.target)
+        if (generation !== this.generation || this.callbacks.get(id) !== stored) return
         this.callbacks.update(record, {
           type: "result",
           content: `Subagent ${record.name} (${id}) failed: ${event.error}`,
@@ -138,6 +153,8 @@ export class ChildWatcher {
         const content = result.error
           ? `Subagent ${record.name} (${id}) failed: ${result.error}`
           : `Subagent ${record.name} (${id}) completed:\n\n${event.report ? completionReportText(event.report) : (result.text ?? "(no assistant text)")}`
+        if (record.target?.kind === "background") await closeTerminal(record.target)
+        if (generation !== this.generation || this.callbacks.get(id) !== stored) return
         this.callbacks.update(record, { type: "result", content })
         return
       }
@@ -148,12 +165,70 @@ export class ChildWatcher {
     }
     if (!current()) return
     if (!["launching", "running", "awaiting-parent"].includes(record.state)) return
-    const exitPath = join(record.artifactDir, "process-exit")
-    try {
-      const exitCode = Number.parseInt((await readFile(exitPath, "utf8")).trim(), 10)
+    if (record.target?.kind === "background" && record.runId) {
+      try {
+        const failure = JSON.parse(
+          await readFile(rpcFailurePath(record.artifactDir, record.runId), "utf8"),
+        ) as { error?: unknown }
+        if (!current()) return
+        if (typeof failure?.error !== "string") throw new Error("Invalid background RPC failure")
+        await closeTerminal(record.target)
+        if (!current()) return
+        this.callbacks.update(
+          { ...record, revision: record.revision + 1, state: "failed", error: failure.error },
+          {
+            type: "result",
+            content: `Subagent ${record.name} (${id}) failed: ${failure.error}`,
+          },
+        )
+        return
+      } catch (error) {
+        if (!current()) return
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.callbacks.activity({
+            ...record,
+            activityError: error instanceof Error ? error.message : String(error),
+          })
+          return
+        }
+      }
+    }
+    if (exitReadError !== undefined) throw exitReadError
+    if (exitCode !== undefined) {
+      let parentTeardown = false
+      if (record.target?.kind === "background" && record.runId) {
+        try {
+          await readFile(parentTeardownPath(record.artifactDir, record.runId), "utf8")
+          parentTeardown = true
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        }
+      }
       if (!current()) return
-      const result = await extractResult(record.sessionFile, record.resultAfterEntry)
+      const result: Awaited<ReturnType<typeof extractResult>> = parentTeardown
+        ? {}
+        : await extractResult(record.sessionFile, record.resultAfterEntry)
       if (!current()) return
+      // RPC Pi exits 0 for both parent stdin closure and a child-initiated
+      // shutdown, so background exits are never inferred as completed.
+      if (
+        record.target?.kind === "background" &&
+        (parentTeardown || (exitCode === 0 && !result.error))
+      ) {
+        this.callbacks.update(
+          {
+            ...record,
+            revision: record.revision + 1,
+            state: "interrupted",
+            error: `background process exited with status ${exitCode} before completion`,
+          },
+          {
+            type: "result",
+            content: `Subagent ${record.name} (${id}) was interrupted because its process exited with status ${exitCode} before completion.`,
+          },
+        )
+        return
+      }
       const failed = exitCode !== 0 || !!result.error
       const next = {
         ...record,
@@ -171,21 +246,53 @@ export class ChildWatcher {
           : `Subagent ${record.name} (${id}) completed:\n\n${next.result ?? "(no assistant text)"}`,
       })
       return
-    } catch (error) {
-      if (!current()) return
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
-    if (record.paneId && !(await paneExists(record.paneId))) {
+    let alive: boolean | undefined
+    try {
+      alive = record.runId
+        ? await processExists(record.artifactDir, record.runId)
+        : record.paneId
+          ? await legacyPaneExists(record.paneId)
+          : true
+    } catch (error) {
+      if (current())
+        this.callbacks.activity({
+          ...record,
+          activityError: error instanceof Error ? error.message : String(error),
+        })
+      return
+    }
+    if (!current()) return
+    if (alive === false || (alive === undefined && Date.now() - record.startedAt > 10000)) {
+      // Recheck the exit marker on the next tick: the wrapper may have written it
+      // between our first read and the process check.
+      try {
+        await readFile(exitPath, "utf8")
+        return
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
       if (!current()) return
+      try {
+        const lateEvents = await readEvents(record.artifactDir, record.lastEventSequence)
+        if (!current() || lateEvents.length > 0) return
+      } catch (error) {
+        if (current())
+          this.callbacks.activity({
+            ...record,
+            activityError: error instanceof Error ? error.message : String(error),
+          })
+        return
+      }
       const next = {
         ...record,
         revision: record.revision + 1,
         state: "interrupted" as const,
-        error: "tmux pane closed before completion",
+        error: "child process exited before completion",
       }
       this.callbacks.update(next, {
         type: "result",
-        content: `Subagent ${record.name} (${id}) was interrupted because its tmux pane closed.`,
+        content: `Subagent ${record.name} (${id}) was interrupted because its process exited before completion.`,
       })
     }
   }

@@ -15,13 +15,20 @@ import type { ChildRecord } from "../src/parent/registry.ts"
 import { ChildWatcher } from "../src/parent/watcher.ts"
 import { atomicWriteJson, type ChildActivity, writeEvent } from "../src/shared/protocol.ts"
 import { seedSession } from "../src/shared/sessions.ts"
-import { createTarget, paneExists, sendToPane } from "../src/shared/tmux.ts"
+import { createTarget, paneExists } from "../src/shared/tmux.ts"
+import { writeCommand } from "../src/shared/control.ts"
+
+vi.mock("../src/shared/control.ts", async (original) => ({
+  ...(await original<typeof import("../src/shared/control.ts")>()),
+  writeCommand: vi.fn(async () => 1),
+  waitForReceipt: vi.fn(async () => undefined),
+  processExists: vi.fn(async () => true),
+}))
 
 vi.mock("../src/shared/tmux.ts", async (original) => ({
   ...(await original<typeof import("../src/shared/tmux.ts")>()),
   createTarget: vi.fn(async () => ({ paneId: "%child" })),
   paneExists: vi.fn(async () => true),
-  sendToPane: vi.fn(async () => undefined),
   tmuxExec: vi.fn(async () => "tmux 3.5"),
 }))
 
@@ -457,7 +464,7 @@ describe("parent activity event bus", () => {
   })
 
   it("handles ask, guidance and direct child input without stale awaiting-parent state", async () => {
-    const child = await record("ask")
+    const child = await record("ask", { runId: "0123456789abcdef" })
     await activity(child, "working")
     const parent = await harness([child])
     await parent.emit("session_start")
@@ -488,7 +495,10 @@ describe("parent activity event bus", () => {
     await activity(child, "waiting", 4)
     await parent.tick()
     await parent.execute("suba_send", { id: child.id, message: "continue" })
-    expect(sendToPane).toHaveBeenCalledWith(child.paneId, "continue")
+    expect(writeCommand).toHaveBeenCalledWith(child.artifactDir, child.runId, child.id, {
+      type: "guidance",
+      message: "continue",
+    })
     expect(parent.snapshots.at(-1)).toEqual({ activeCount: 0 })
     await activity(child, "working", 5)
     await parent.tick()
@@ -621,7 +631,7 @@ describe("parent activity event bus", () => {
     await expect(parent.execute("suba_send", { id: "missing", message: "late" })).rejects.toThrow(
       "Unknown subagent missing; no message was delivered.",
     )
-    expect(sendToPane).not.toHaveBeenCalled()
+    expect(writeCommand).not.toHaveBeenCalled()
   })
 
   it("refreshes completion before submitting guidance without waiting for a poll", async () => {
@@ -639,19 +649,19 @@ describe("parent activity event bus", () => {
     await expect(parent.execute("suba_send", { id: child.id, message: "late" })).rejects.toThrow(
       "Use suba_resume",
     )
-    expect(sendToPane).not.toHaveBeenCalled()
+    expect(writeCommand).not.toHaveBeenCalled()
   })
 
   it("reports uncertain processing when completion races guidance submission", async () => {
-    const child = await record("send", { state: "awaiting-parent" })
+    const child = await record("send", { state: "awaiting-parent", runId: "0123456789abcdef" })
     await activity(child, "waiting")
     const parent = await harness([child])
     await parent.emit("session_start")
     let release!: () => void
-    vi.mocked(sendToPane).mockImplementationOnce(
+    vi.mocked(writeCommand).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          release = resolve
+          release = () => resolve(1)
         }),
     )
     const sending = parent.execute("suba_send", { id: child.id, message: "continue" })

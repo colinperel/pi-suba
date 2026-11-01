@@ -1,7 +1,7 @@
 {
   "name": "pi-suba",
   "version": "0.3.0",
-  "description": "Interactive tmux subagents for Pi",
+  "description": "Pi subagents with native terminal splits and background fallback",
   "type": "module",
   "keywords": [
     "pi-package"

@@ -367,6 +367,8 @@ describe("child completion", () => {
     expect((await snapshot()).state).toBe("waiting")
     await handlers.get("input")?.({}, ctx)
     await handlers.get("agent_start")?.({}, ctx)
+    // Pi starts the delivered user message after input and agent_start.
+    await handlers.get("message_start")?.({ message: { role: "user" } }, ctx)
     expect((await snapshot()).state).toBe("working")
     await tools
       .get("suba_done")!

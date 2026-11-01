@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { latestRequestContextTokens, requestContextTokens } from "../shared/context-tokens.ts"
+import { CommandInbox, DeferredCommand } from "../shared/control.ts"
 import {
   validateCompletionReport,
   type CompletionReport,
@@ -12,6 +13,15 @@ import { EventWriter } from "./events.ts"
 type Lifecycle = "running" | "awaiting-parent" | "completing" | "terminated"
 type AssistantState = { stopReason?: string; errorMessage?: string }
 
+// Pi's sendUserMessage is fire-and-forget. Prompts dispatched while Pi is idle
+// collide if both pass preflight before either starts its run, and a prompt
+// that fails before its run emits nothing an extension can observe. Track the
+// one run-starting prompt in preflight (Pi queues prompts sent while
+// streaming, and can withdraw them silently; pending messages cover those),
+// and treat one that shows no Pi progress for this long as lost so the child
+// cannot stay unfinishable. The proper fix is a Pi API that reports delivery.
+const LOST_DELIVERY_MS = 30000
+
 export default function (pi: ExtensionAPI) {
   const childId = process.env.SUBA_CHILD_ID
   const artifactDir = process.env.SUBA_ARTIFACT_DIR
@@ -22,6 +32,70 @@ export default function (pi: ExtensionAPI) {
   const events = new EventWriter(childId, artifactDir)
   let lifecycle: Lifecycle = "running"
   let pendingReport: CompletionReport | undefined
+  let preflight = false
+  let deliveryProgress = 0
+  let compacting = false
+  let latestContext: ExtensionContext | undefined
+  const progress = () => {
+    deliveryProgress = Date.now()
+  }
+  const awaitingDelivery = async (ctx: ExtensionContext): Promise<boolean> => {
+    if (!preflight) return false
+    if (
+      compacting ||
+      !ctx.isIdle() ||
+      ctx.hasPendingMessages() ||
+      Date.now() - deliveryProgress < LOST_DELIVERY_MS
+    )
+      return true
+    preflight = false
+    if (lifecycle === "running") await activity.waiting()
+    return false
+  }
+  const runId = process.env.SUBA_RUN_ID
+  const inbox = runId
+    ? new CommandInbox(artifactDir, runId, childId, async (command) => {
+        const ctx = latestContext
+        if (!ctx || lifecycle === "terminated" || lifecycle === "completing")
+          throw new Error("Child is no longer accepting commands; use suba_resume")
+        if (command.type === "shutdown") {
+          if (
+            (await awaitingDelivery(ctx)) ||
+            ctx.hasPendingMessages() ||
+            (lifecycle !== "awaiting-parent" && !ctx.isIdle())
+          )
+            throw new Error("Child must be idle or awaiting parent guidance before finishing")
+          await activity.done()
+          return () => {
+            lifecycle = "terminated"
+            inbox?.stop()
+            ctx.shutdown()
+          }
+        }
+        // Pi runs registered extension commands before input/agent hooks. They
+        // are not model-visible guidance and must not invalidate a final report
+        // or leave an idle child marked working.
+        const commandName = command.message.slice(1).split(" ", 1)[0]
+        const extensionCommand =
+          command.message.startsWith("/") &&
+          pi
+            .getCommands()
+            .some((entry) => entry.source === "extension" && entry.name === commandName)
+        if (!extensionCommand) {
+          // While streaming, Pi queues the steer; while idle, a second prompt
+          // would race the first one's preflight.
+          if (ctx.isIdle() && (compacting || (await awaitingDelivery(ctx))))
+            throw new DeferredCommand()
+          // Counted until the input hook shows whether Pi will queue it.
+          preflight = true
+          progress()
+          pendingReport = undefined
+          lifecycle = "running"
+          await activity.model()
+        }
+        pi.sendUserMessage(command.message, { deliverAs: "steer", expandPromptTemplates: true })
+      })
+    : undefined
 
   const latestAssistant = (ctx: ExtensionContext): AssistantState | undefined => {
     const branch = ctx.sessionManager.getBranch() as Array<{
@@ -61,6 +135,7 @@ export default function (pi: ExtensionAPI) {
     }
     await activity.done().catch(() => undefined)
     lifecycle = "terminated"
+    inbox?.stop()
     ctx.shutdown()
     return true
   }
@@ -146,6 +221,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on("session_start", async (_event, ctx) => {
+    latestContext = ctx
     await events.initialize()
     await activity.update({
       lastRequestContextTokens: latestRequestContextTokens(ctx.sessionManager.getBranch()),
@@ -153,12 +229,35 @@ export default function (pi: ExtensionAPI) {
     await activity.starting()
     if (ctx.model) await activity.selected(ctx.model.provider, ctx.model.id)
     await activity.thinking(ctx.thinkingLevel as ThinkingLevel)
+    inbox?.start()
+    lostDeliveryTimer ??= setInterval(() => {
+      if (latestContext) void awaitingDelivery(latestContext).catch(() => undefined)
+    }, 1000)
+    lostDeliveryTimer.unref()
   })
-  pi.on("input", async () => {
+  let lostDeliveryTimer: NodeJS.Timeout | undefined
+  pi.on("before_agent_start", progress)
+  pi.on("session_before_compact", () => {
+    compacting = true
+  })
+  const compacted = () => {
+    compacting = false
+    progress()
+  }
+  pi.on("session_compact", compacted)
+  pi.on("session_compact_failed", compacted)
+  const resumeInput = async () => {
+    progress()
     if (lifecycle === "awaiting-parent") {
       lifecycle = "running"
       await activity.model()
     }
+  }
+  pi.on("input", async (event) => {
+    // Launch, resume, and pane-typed prompts share Pi's preflight with inbox
+    // guidance. A prompt sent while streaming is queued, not run.
+    preflight = !event.streamingBehavior
+    await resumeInput()
   })
   const working = (update: () => Promise<void>) => {
     if (lifecycle === "running") return update()
@@ -168,11 +267,17 @@ export default function (pi: ExtensionAPI) {
       ctx.abort()
       return
     }
+    preflight = false
     return working(() => activity.model())
   })
-  pi.on("message_start", (event) => {
-    // Input can be queued before suba_done but delivered after its tool result.
-    if (event.message.role === "user") pendingReport = undefined
+  pi.on("message_start", async (event) => {
+    // Receipt confirms dispatch, not model-visible delivery. A queued steer can
+    // also arrive after suba_ask without starting another agent run.
+    if (event.message.role === "user") {
+      preflight = false
+      pendingReport = undefined
+      await resumeInput()
+    }
   })
   pi.on("turn_start", () => working(() => activity.model()))
   pi.on("before_provider_request", () => working(() => activity.model()))
@@ -187,7 +292,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("model_select", (event) => activity.selected(event.model.provider, event.model.id))
   pi.on("thinking_level_select", (event) => activity.thinking(event.level as ThinkingLevel))
   pi.on("agent_settled", async (_event, ctx) => {
-    if (lifecycle !== "running" || ctx.hasPendingMessages()) return
+    await inbox?.poll()
+    if (preflight || lifecycle !== "running" || ctx.hasPendingMessages()) return
     if (pendingReport) {
       await finish(ctx, pendingReport)
       pendingReport = undefined
@@ -195,6 +301,10 @@ export default function (pi: ExtensionAPI) {
     else await activity.waiting()
   })
   pi.on("session_shutdown", async () => {
+    inbox?.stop()
+    clearInterval(lostDeliveryTimer)
+    lostDeliveryTimer = undefined
+    latestContext = undefined
     if (lifecycle !== "terminated" && lifecycle !== "awaiting-parent") await activity.done()
   })
 }

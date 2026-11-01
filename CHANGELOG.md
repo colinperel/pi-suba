@@ -3,6 +3,14 @@ title: Changelog
 description: Release notes for pi-suba.
 ---
 
+## Unreleased
+
+- Allow configured extension tools in children with the additive `childTools` setting.
+- Launch visible children in tmux or Rex, with background RPC children everywhere else.
+- Send guidance and orderly shutdown through per-launch inboxes instead of simulated typing.
+- Track child processes independently of terminal panes, preserving artifacts and worktrees when a native launch cannot be confirmed.
+- Keep pre-inbox children watchable and finishable; resume them to enable inbox guidance.
+
 ## v0.3.0 (2026-09-11)
 
 - Launch subagents in isolated workmux worktrees and finish verified integrations with `suba_finish`.

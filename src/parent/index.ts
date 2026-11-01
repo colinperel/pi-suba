@@ -3,6 +3,9 @@ import { formatRequestContext } from "../shared/context-tokens.ts"
 import { loadConfig, type SubaConfig } from "../shared/config.ts"
 import { loadInstructions } from "../shared/instructions.ts"
 import { loadProfiles, type Profile } from "../shared/profiles.ts"
+import { closeTerminal } from "../shared/terminal.ts"
+import { parentTeardownPath } from "../shared/control.ts"
+import { atomicWriteJson } from "../shared/protocol.ts"
 import { registerCommands } from "./commands.ts"
 import { registerTools, type ManagerHost } from "./tools.ts"
 import { isLive, restoreRegistry, type ChildRecord } from "./registry.ts"
@@ -168,12 +171,22 @@ export default async function (pi: ExtensionAPI) {
     watcher.start()
     refreshWidget()
   })
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     sessionGeneration += 1
     ready = false
     watcher.stop()
     unsubscribeActivity?.()
     unsubscribeActivity = undefined
+    for (const record of records.values()) {
+      if (record.target?.kind === "background") {
+        try {
+          if (isLive(record) && record.runId)
+            await atomicWriteJson(parentTeardownPath(record.artifactDir, record.runId), {})
+        } finally {
+          await closeTerminal(record.target)
+        }
+      }
+    }
     records.clear()
     publishedCount = 0
     pi.events.emit("suba:activity", { activeCount: 0 })

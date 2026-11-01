@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -36,6 +36,150 @@ function makeRecord(dir: string): ChildRecord {
 }
 
 describe("parent watcher", () => {
+  it.each(
+    (["background", "tmux", "rex"] as const).flatMap((kind) =>
+      [true, false].map((exit) => ({ kind, exit })),
+    ),
+  )("delivers late completion ($kind, exit marker=$exit)", async ({ kind, exit }) => {
+    const dir = await mkdtemp(join(tmpdir(), "suba-completion-exit-"))
+    try {
+      const report = { summary: "Completed during the event-read window" }
+      let record: ChildRecord = {
+        ...makeRecord(dir),
+        runId: "0123456789abcdef",
+        target: { kind, id: "test-target" },
+      }
+      await seedSession(record.sessionFile, "/tmp")
+      await writeFile(join(dir, "process-pid"), String(process.pid))
+      const notifications: string[] = []
+      vi.spyOn(protocol, "readEvents").mockImplementationOnce(async () => {
+        await writeEvent(dir, {
+          version: 1,
+          childId: record.id,
+          sequence: 1,
+          timestamp: 1,
+          type: "completed",
+          report,
+        })
+        if (exit) await writeFile(join(dir, "process-exit"), "0")
+        return []
+      })
+      const watcher = new ChildWatcher(500, {
+        list: () => [record],
+        get: () => record,
+        update: (next, notification) => {
+          record = next
+          if (notification) notifications.push(notification.content)
+        },
+        activity: (next) => {
+          record = next
+        },
+      })
+      await watcher.check(record.id)
+      await watcher.check(record.id)
+      expect(record.state).toBe("completed")
+      expect(record.report).toEqual(report)
+      expect(notifications).toEqual([`Subagent worker (abc) completed:\n\n${report.summary}`])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not mask an unmarked background crash as parent teardown", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "suba-unmarked-exit-"))
+    try {
+      let record: ChildRecord = {
+        ...makeRecord(dir),
+        runId: "0123456789abcdef",
+        target: { kind: "background", id: "test-target" },
+      }
+      await seedSession(record.sessionFile, "/tmp")
+      await writeFile(join(dir, "process-exit"), "42")
+      const watcher = new ChildWatcher(500, {
+        list: () => [record],
+        get: () => record,
+        update: (next) => {
+          record = next
+        },
+        activity: (next) => {
+          record = next
+        },
+      })
+      await watcher.check(record.id)
+      expect(record.state).toBe("failed")
+      expect(record.error).toContain("42")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { teardown: false, state: "failed", error: "provider overloaded" },
+    { teardown: true, state: "interrupted", error: "status 0" },
+  ])(
+    "classifies a clean background exit after a provider error (teardown=$teardown)",
+    async ({ teardown, state, error }) => {
+      const dir = await mkdtemp(join(tmpdir(), "suba-provider-exit-"))
+      try {
+        let record: ChildRecord = {
+          ...makeRecord(dir),
+          runId: "0123456789abcdef",
+          target: { kind: "background", id: "test-target" },
+        }
+        await seedSession(record.sessionFile, "/tmp", undefined, [
+          {
+            type: "message",
+            id: "failure",
+            message: {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "provider overloaded",
+            },
+          },
+        ])
+        if (teardown) await writeFile(join(dir, "parent-teardown-0123456789abcdef.json"), "{}")
+        await writeFile(join(dir, "process-exit"), "0")
+        const notifications: string[] = []
+        const watcher = new ChildWatcher(500, {
+          list: () => [record],
+          get: () => record,
+          update: (next, notification) => {
+            record = next
+            if (notification) notifications.push(notification.content)
+          },
+          activity: (next) => {
+            record = next
+          },
+        })
+        await watcher.check(record.id)
+        expect(record.state).toBe(state)
+        expect(record.error).toContain(error)
+        expect(notifications).toHaveLength(1)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it("reports unreadable process identity without rejecting the watcher or marking the child dead", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "suba-pid-watcher-"))
+    await writeFile(join(dir, "process-pid"), "invalid")
+    let record: ChildRecord = { ...makeRecord(dir), runId: "0123456789abcdef" }
+    const watcher = new ChildWatcher(500, {
+      list: () => [record],
+      get: () => record,
+      update: (next) => {
+        record = next
+      },
+      activity: (next) => {
+        record = next
+      },
+    })
+    await expect(watcher.check(record.id)).resolves.toBeUndefined()
+    expect(record.state).toBe("running")
+    expect(record.activityError).toContain("Invalid subagent process PID")
+  })
   it.each(["absent", "stale", "unreadable"])(
     "delivers and restores the exact explicit report with %s prose",
     async (prose) => {

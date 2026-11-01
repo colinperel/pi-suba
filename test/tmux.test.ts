@@ -5,23 +5,11 @@ import {
   createTarget,
   paneExists,
   PartialTmuxTargetError,
-  sendToPane,
   type TmuxExec,
 } from "../src/shared/tmux.ts"
 const exec = promisify(execFile)
 const socket = `pi-suba-test-${process.pid}`
-const run: TmuxExec = async (args, input) => {
-  if (input === undefined) return (await exec("tmux", ["-L", socket, ...args])).stdout.trim()
-  const child = execFile("tmux", ["-L", socket, ...args])
-  child.stdin?.end(input)
-  return await new Promise((resolve, reject) => {
-    let out = "",
-      err = ""
-    child.stdout?.on("data", (d) => (out += d))
-    child.stderr?.on("data", (d) => (err += d))
-    child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(err))))
-  })
-}
+const run: TmuxExec = async (args) => (await exec("tmux", ["-L", socket, ...args])).stdout.trim()
 
 describe("tmux target transactions", () => {
   it("removes a partial split target", async () => {
@@ -88,12 +76,11 @@ describe.skipIf(!process.env.PATH)("tmux integration", () => {
       await run(["kill-server"])
     } catch {}
   })
-  it("creates stable panes and sends literal and multiline input", async () => {
+  it("creates stable panes", async () => {
     if (!parentPane) return
-    const target = await createTarget(parentPane, "cat > /tmp/pi-suba-tmux-input", run)
+    const target = await createTarget(parentPane, "sleep 60", run)
     expect(target.paneId).toMatch(/^%/)
     expect(await paneExists(target.paneId, run)).toBe(true)
-    await sendToPane(target.paneId, "one line", run)
   })
   it("follows a moved parent without reusing its historical child window", async () => {
     if (!parentPane) return

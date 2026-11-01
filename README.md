@@ -1,15 +1,16 @@
 # pi-suba
 
-`pi-suba` is my spin on subagents in [Pi](https://pi.dev): delegated Pi sessions running visibly
-in tmux.
+`pi-suba` is my spin on subagents in [Pi](https://pi.dev): delegated Pi sessions with optional
+visible terminals.
 
-Each subagent opens in a split in the parent's current tmux window, so you can watch it work,
-inspect its output, and type into its session. Launches return after target creation without
-waiting for the child result. Results and help requests arrive asynchronously in the parent session.
+Inside tmux or Rex, children open in native splits you can watch and interact with. Elsewhere,
+children run in the background using Pi's long-lived RPC mode. Guidance, results, lifecycle,
+and worktree handling are independent of the terminal. Launches return without waiting for the
+child result; results and help requests arrive asynchronously in the parent session.
 
 ## Why pi-suba?
 
-- **Visible:** every child is a real Pi TUI, not a hidden background process.
+- **Visible when supported:** native interactive splits in tmux and Rex, with background fallback elsewhere.
 - **Non-blocking:** the parent can keep working after each child target is created.
 - **Interactive:** the parent or user can send guidance to a live child.
 - **Asynchronous:** completion, failure, and help requests start a new parent turn automatically.
@@ -19,8 +20,8 @@ waiting for the child result. Results and help requests arrive asynchronously in
 ## Requirements
 
 - [Pi](https://pi.dev)
-- `tmux` on `PATH`
-- A parent Pi session running inside tmux
+- macOS or Linux (`/bin/sh` and `ps`)
+- Optional: `tmux` or `rex` on `PATH` for native visible splits
 - A compatible `workmux` on `PATH` for launches with `worktree: true`
 
 ## Install
@@ -29,7 +30,7 @@ waiting for the child result. Results and help requests arrive asynchronously in
 pi install npm:pi-suba
 ```
 
-Start Pi inside tmux:
+Start Pi anywhere. For visible tmux children:
 
 ```sh
 tmux new -s pi
@@ -45,7 +46,7 @@ Ask the parent to delegate an objective:
 ```
 
 The parent identifies focused workstreams, launches one or more children, and continues without
-waiting. Each child appears in tmux. When a child finishes or asks for guidance, its message appears
+waiting. Children appear in native splits where supported, or run in the background. When a child finishes or asks for guidance, its message appears
 in the parent conversation and starts a new turn.
 
 Running `/suba` without arguments opens a multiline task editor. If the parent is busy, the request
@@ -75,13 +76,13 @@ add profiles when distinct kinds of children need different capabilities.
 ## How it works
 
 1. The parent calls `suba` with a name and a focused task.
-2. `pi-suba` creates a child session and launches Pi in tmux.
-3. The child reports activity and lifecycle events through files under `~/.pi/agent/suba/artifacts/`.
+2. `pi-suba` creates a child session and selects tmux, Rex, or background execution.
+3. Parent guidance and child activity/lifecycle events use files under `~/.pi/agent/suba/artifacts/`.
 4. A parent-side watcher updates the activity widget and delivers results.
 5. The child completes automatically when settled, unless automatic completion is disabled.
 
-The parent tool call returns as soon as tmux accepts the launch. Worktree provisioning, including
-configured hooks, completes before tmux target creation. Results are pushed to the parent, so the
+The parent tool call returns after launch. Worktree provisioning, including
+configured hooks, completes before launching the child. Results are pushed to the parent, so the
 parent should never sleep or repeatedly poll for completion.
 
 ## Delegation and context
@@ -125,7 +126,7 @@ estimate or automatic cutoff. Apply the same judgment when token metadata is una
 | ------------- | ----------------------------------------------------- |
 | `suba`        | Launch a child and return after target creation       |
 | `suba_send`   | Send guidance to a live child by ID                   |
-| `suba_finish` | Record a verified result and close an idle or awaiting-parent child pane |
+| `suba_finish` | Record a verified result and stop an idle or awaiting-parent child |
 | `suba_resume` | Continue a completed or exited child's session        |
 | `suba_list`   | Take a one-time snapshot of child status and activity |
 
@@ -204,8 +205,9 @@ After independently verifying integration, the parent calls `suba_finish`:
 
 `suba_finish` accepts a child awaiting parent guidance or a running child whose
 activity file confirms it has settled into waiting. An idle child does not need
-to call `suba_ask` just to become finishable. It closes only that child's pane
-and records the parent's verified result as completed. It does not
+to call `suba_ask` just to become finishable. It requests orderly shutdown through
+that child's inbox and records the parent's verified result as completed. A visible
+terminal normally closes when its child exits. It does not
 merge or remove worktrees. Leave blocked children open and send guidance instead.
 Finish a verified merge before authorizing the next one. Removed worktrees are
 reported as non-resumable; saved transcripts and results remain available.
@@ -218,9 +220,11 @@ discard its branch:
 workmux remove suba-review-parser-a1b2c3d4
 ```
 
-If artifact preparation or tmux target creation fails, pi-suba runs
+If artifact preparation or a confirmed terminal launch fails, pi-suba runs
 `workmux remove --force <handle>`. A rollback failure reports the manual cleanup
-command while preserving both errors.
+command while preserving both errors. If a Rex launch response is ambiguous, it
+preserves artifacts and the worktree rather than deleting files a child may be using;
+inspect the session before retrying.
 
 ## Child tools
 
@@ -266,7 +270,7 @@ Automatic completion of ordinary final answers is unchanged. Parents must run th
 updated extension to consume explicit reports from updated children.
 
 When a child calls `suba_ask`, it enters an awaiting-parent state. The parent receives the question
-and can answer with `suba_send`. You can also focus the child's tmux pane and type directly into it.
+and can answer with `suba_send`. With a visible child, you can also focus its terminal and type directly into it.
 
 Notifications are recorded and displayed in the parent transcript without starting or
 steering a parent run. They remain available in context for the next model request.
@@ -451,17 +455,44 @@ selection, but `bash` can still modify the filesystem. It is not a security boun
 A built-in `default` profile is always available. It uses the default tool policy, loads context
 files and skills, and adds no profile prompt. Create `profiles/default.md` to customize it.
 
-## Tmux splits
+## Terminal hosts
 
-Launch and resume always create a split in the parent's current tmux window. The first
-child opens beside the parent; additional children stack below it with equal heights.
-Only panes owned by that parent are grouped. There is no placement argument or setting.
-Launch and resume schemas reject obsolete placement arguments; remove them from saved
-launch recipes.
+Host-specific behavior is selected in `src/shared/terminal.ts`; the tmux layout helper
+retains its existing stacking and equal-height behavior. Selection prefers `TMUX_PANE`
+(also when tmux runs inside Rex), then `REX_BLOCK`, otherwise background execution.
+
+- **tmux:** the first child opens beside the current parent; additional children stack
+  below it with equal heights. Only panes owned by that parent are grouped.
+- **Rex:** children split to the right of the current parent block without taking focus.
+  Commands use Rex's default login-shell environment so GUI-started servers can find
+  the user's tools.
+- **Background:** Pi runs in RPC mode, with diagnostics/events in `process.log`. Use the
+  parent tools for guidance and results; no separate child TUI is created. Background
+  children stop when the parent session shuts down or reloads, or the parent process
+  exits; resume their saved sessions afterward. A parent-teardown exit, or a zero exit
+  whose session does not end in a provider error, is interrupted without a completion
+  event, never successful completion. Rejected RPC
+  prompts and failed guidance commands report failure; recoverable extension hook errors
+  do not. Raw diagnostics stay in the private log. Headless extension dialogs
+  are cancelled rather than left waiting for an unavailable interactive user.
+
+Messages never simulate typing. Each launch has a separate inbox and receipts, so
+resuming cannot replay an earlier launch's commands. Skill commands sent by `suba_send`
+expand through Pi's normal command API. While an idle child is compacting or still
+starting a prompt (its task, typed input, or earlier guidance), later guidance waits
+unacknowledged for it to reach the model; a start that shows no progress for 30 seconds
+is treated as lost. Process identity and exit files, not pane
+existence, determine liveness for new children. A selected native backend failure is
+reported, not retried in another backend, because it may already have created a child.
+
+There is no placement argument or setting. Launch and resume schemas reject obsolete
+placement arguments; remove them from saved launch recipes.
 
 Legacy `placement` and `sharedWindowName` config keys are accepted but ignored and can
 be removed. Stored child `placement` and `windowId` fields are discarded on restoration.
-Existing live children stay in their panes and remain watchable, reachable, and finishable.
+Existing pre-inbox children stay in their panes and remain watchable and finishable.
+An updated parent cannot send inbox guidance to an older child: interact with it directly,
+then resume it after it exits to adopt the new protocol.
 Resuming uses the current parent pane, never a historical child window. Historical tool
 results remain readable without displaying obsolete placement metadata.
 
