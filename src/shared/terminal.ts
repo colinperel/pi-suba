@@ -88,7 +88,7 @@ export async function openTerminal(
         return { kind: "rex", id, sessionId: host.sessionId }
       } catch (error) {
         throw new UncertainTerminalLaunchError(
-          `Rex launch could not be confirmed: ${error instanceof Error ? error.message : String(error)}. Artifacts and any worktree were preserved; inspect the session before retrying.`,
+          `Rex launch could not be confirmed: ${error instanceof Error ? error.message : String(error)}. Artifacts were preserved; inspect the session before retrying.`,
           { cause: error },
         )
       }

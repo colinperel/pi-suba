@@ -6,7 +6,6 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import {
-  childControlPrompt,
   childTools,
   invocation,
   launchParametersSchema,
@@ -45,15 +44,6 @@ describe("child launch validation", () => {
     process.env.SUBA_PI_EXECUTABLE = "./test/fixtures/fake-pi"
     expect(invocation()).toBe(`'${process.cwd()}/test/fixtures/fake-pi'`)
   })
-  it("keeps worktree children waiting for parent-verified completion", () => {
-    const prompt = childControlPrompt(true)
-    expect(prompt).toContain("request merge approval with suba_ask and wait")
-    expect(prompt).toContain("When the parent sends /skill:merge")
-    expect(prompt).toContain("use suba_ask to report success or a blocker, then wait")
-    expect(prompt).toContain("Do not call suba_done for this workflow")
-    expect(prompt).toContain("uses suba_finish to record completion")
-    expect(childControlPrompt(false)).not.toContain("/skill:merge")
-  })
   it("enables configured extension tools alongside the profile policy", () => {
     expect(childTools(["read", "bash"], ["process", "read"])).toEqual([
       "read",
@@ -80,19 +70,17 @@ describe("child launch validation", () => {
   it("guides parallel worktree launches through serialized merge approval", () => {
     const profiles = new Map([["default", BUILTIN_DEFAULT_PROFILE]])
     const description = launchToolDescription(profiles)
-    expect(description).toContain("Use worktree: true")
-    expect(description).toContain("omit it for read-only tasks")
+    expect(description).toContain("create a linked git worktree first and pass it as cwd")
+    expect(description).toContain("read-only tasks need none")
     expect(description).toContain("skills enabled and the merge skill available")
     expect(description).toContain("autoComplete: false")
-    expect(description).toContain("suba_ask rather than finish with suba_done")
+    expect(description).toContain("wait rather than finish with suba_done")
     expect(description).toContain("one at a time by sending /skill:merge via suba_send")
     expect(description).toContain("instructions appended after a space, not a newline")
     expect(description).toContain("use suba_ask to report success or a blocker, then wait")
     expect(description).toContain("verify integration and call suba_finish")
     expect(description).toContain("Leave blocked children open")
-    expect(launchParametersSchema(profiles).properties.worktree).toMatchObject({
-      description: expect.stringContaining("/skill:merge"),
-    })
+    expect(launchParametersSchema(profiles).properties).not.toHaveProperty("worktree")
   })
   it("enumerates profile selection when multiple profiles exist", () => {
     const reviewer: Profile = { ...BUILTIN_DEFAULT_PROFILE, name: "reviewer" }

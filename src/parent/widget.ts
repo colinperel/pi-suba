@@ -23,7 +23,6 @@ export function shortModel(model?: string): string {
 export interface WidgetItem {
   id: string
   name: string
-  worktree: boolean
   state: "running" | "waiting"
   activity: string
   model: string
@@ -59,7 +58,6 @@ export function projectWidget(
     (record): WidgetItem => ({
       id: record.id,
       name: record.name,
-      worktree: Boolean(record.worktree),
       state: record.state === "awaiting-parent" ? "waiting" : "running",
       activity: activityLabel(record),
       model: shortModel(record.activity?.model ?? record.resolvedLaunch.model),
@@ -81,7 +79,7 @@ export function projectWidgetRows(records: ChildRecord[], now: number, maxRows: 
   for (const item of projection.items) {
     const glyph = item.state === "waiting" ? "?" : "●"
     rows.push(
-      `${glyph} ${item.name}${item.worktree ? " " : ""} · ${item.activity} · ${item.model} · ${item.thinking} · ${item.elapsed}`,
+      `${glyph} ${item.name} · ${item.activity} · ${item.model} · ${item.thinking} · ${item.elapsed}`,
     )
   }
   if (projection.overflow) rows.push(`+${projection.overflow} more`)
@@ -135,8 +133,7 @@ export class ActivityWidget implements Component {
         item.state === "waiting"
           ? guidanceColor(`· ${item.activity}`)
           : this.theme.fg("dim", `· ${item.activity}`)
-      const badge = item.worktree ? ` ${this.theme.fg("accent", "")}` : ""
-      const left = ` ${glyph} ${this.theme.bold(item.name)}${badge} ${activity}`
+      const left = ` ${glyph} ${this.theme.bold(item.name)} ${activity}`
       const detailParts =
         innerWidth >= 52 ? [item.model, item.thinking, item.elapsed] : [item.elapsed]
       const right = this.theme.fg("dim", `${detailParts.join(" · ")} `)

@@ -3,7 +3,6 @@ import { isAbsolute, join, relative, sep } from "node:path"
 import { subaDirectory } from "../shared/paths.ts"
 import type { CompletionReport, ChildActivity, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
-import type { WorkmuxWorktree } from "../shared/workmux.ts"
 import type { TerminalTarget } from "../shared/terminal.ts"
 
 export type RegistryState =
@@ -35,7 +34,6 @@ export interface ChildRecord {
   runId?: string
   name: string
   cwd: string
-  worktree?: WorkmuxWorktree
   profile: string
   resolvedLaunch: ResolvedLaunch
   lastEventSequence: number
@@ -90,9 +88,11 @@ export function restoreRegistry(entries: readonly unknown[]): Map<string, ChildR
     const record = structuredClone(entry.data) as ChildRecord & {
       placement?: unknown
       windowId?: unknown
+      worktree?: unknown
     }
     delete record.placement
     delete record.windowId
+    delete record.worktree
     if (!record.id || !Number.isInteger(record.revision)) continue
     const previous = records.get(record.id)
     if (!previous || record.revision > previous.revision)
@@ -109,11 +109,7 @@ export function isResumable(
   record: ChildRecord,
   exists: (path: string) => boolean = existsSync,
 ): boolean {
-  return (
-    !isLive(record) &&
-    (!record.worktree ||
-      (exists(record.worktree.worktreePath) && exists(record.worktree.workingDirectory)))
-  )
+  return !isLive(record) && exists(record.cwd)
 }
 
 export function isLive(record: ChildRecord): boolean {

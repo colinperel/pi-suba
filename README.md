@@ -4,8 +4,8 @@
 visible terminals.
 
 Inside tmux or Rex, children open in native splits you can watch and interact with. Elsewhere,
-children run in the background using Pi's long-lived RPC mode. Guidance, results, lifecycle,
-and worktree handling are independent of the terminal. Launches return without waiting for the
+children run in the background using Pi's long-lived RPC mode. Guidance, results, and lifecycle
+are independent of the terminal. Launches return without waiting for the
 child result; results and help requests arrive asynchronously in the parent session.
 
 ## Why pi-suba?
@@ -22,7 +22,6 @@ child result; results and help requests arrive asynchronously in the parent sess
 - [Pi](https://pi.dev)
 - macOS or Linux (`/bin/sh` and `ps`)
 - Optional: `tmux` or `rex` on `PATH` for native visible splits
-- A compatible `workmux` on `PATH` for launches with `worktree: true`
 
 ## Install
 
@@ -81,8 +80,7 @@ add profiles when distinct kinds of children need different capabilities.
 4. A parent-side watcher updates the activity widget and delivers results.
 5. The child completes automatically when settled, unless automatic completion is disabled.
 
-The parent tool call returns after launch. Worktree provisioning, including
-configured hooks, completes before launching the child. Results are pushed to the parent, so the
+The parent tool call returns after launch. Results are pushed to the parent, so the
 parent should never sleep or repeatedly poll for completion.
 
 ## Delegation and context
@@ -140,41 +138,32 @@ The `suba` tool accepts:
 | `context`      | `fresh` or `fork`                                            |
 | `model`        | Fully qualified `provider/model` identifier                  |
 | `thinking`     | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
-| `cwd`          | Source directory, resolved relative to the parent directory  |
-| `worktree`     | Provision a persistent workmux worktree for the child        |
+| `cwd`          | Working directory, resolved relative to the parent directory |
 | `autoComplete` | Per-launch automatic completion override                     |
 
 Explicit models must exist in Pi's model registry and belong to the active model scope.
 
 ## Worktree launches
 
-Use `worktree: true` for children modifying code in parallel with the parent or
-other children. Omit it for read-only tasks. To keep a child available for merge
-approval, set `autoComplete: false` and ask it to request approval with `suba_ask`
-instead of finishing with `suba_done`:
+Give each child modifying code in parallel with the parent or other children its
+own linked git worktree. Read-only tasks need none. Pi-suba does not create
+worktrees: make one with git, then pass it as `cwd`:
+
+```sh
+git worktree add -b fix-parser .worktrees/fix-parser
+```
+
+To keep a child available for merge approval, set `autoComplete: false` and ask
+it to request approval with `suba_ask` instead of finishing with `suba_done`:
 
 ```json
 {
-  "name": "review parser",
+  "name": "fix parser",
   "task": "Fix the parser, validate, and commit the result. Request merge approval with suba_ask, then wait. After merging, report success or a blocker with suba_ask and wait for the parent to finish the session. Do not call suba_done.",
-  "worktree": true,
+  "cwd": ".worktrees/fix-parser",
   "autoComplete": false
 }
 ```
-
-`pi-suba` derives the branch and handle as
-`suba-<slugged-name>-<child-id>`, then runs:
-
-```sh
-workmux add <handle> --name <handle> --headless --json
-```
-
-Workmux applies its normal worktree path configuration, file operations, and
-`post_create` hooks. These hooks execute shell commands with the parent user's
-permissions, so worktree launches require trusted workmux configuration. Workmux
-does not create a workmux-managed session, window, pane, layout, or pane command.
-Pi-suba launches the child in the effective working directory returned by
-workmux.
 
 The child owns implementation, validation, and commits within its assigned
 scope, without seeking approval for each step. Integration remains a parent
@@ -192,8 +181,7 @@ appended after a space, not a newline, so they accompany the expanded skill:
 
 Use `suba_send` for this message. The merge skill commits, rebases onto the local
 base branch, resolves conflicts while preserving both branches' changes, and
-merges with worktree cleanup. Workmux does not own the separately created pi-suba
-pane. Children report success or blockers with `suba_ask` and remain available.
+merges. Children report success or blockers with `suba_ask` and remain available.
 After independently verifying integration, the parent calls `suba_finish`:
 
 ```json
@@ -209,22 +197,19 @@ to call `suba_ask` just to become finishable. It requests orderly shutdown throu
 that child's inbox and records the parent's verified result as completed. A visible
 terminal normally closes when its child exits. It does not
 merge or remove worktrees. Leave blocked children open and send guidance instead.
-Finish a verified merge before authorizing the next one. Removed worktrees are
-reported as non-resumable; saved transcripts and results remain available.
+Finish a verified merge before authorizing the next one. A child whose working
+directory was removed is reported as non-resumable; saved transcripts and results
+remain available.
 
-Without merge cleanup, the worktree persists when the child finishes. Resume
-launches reuse the same worktree and working directory. Remove it explicitly to
-discard its branch:
+The worktree persists when the child finishes, and resume launches reuse it.
+Remove it with git once its work is integrated or discarded:
 
 ```sh
-workmux remove suba-review-parser-a1b2c3d4
+git worktree remove .worktrees/fix-parser && git branch -d fix-parser
 ```
 
-If artifact preparation or a confirmed terminal launch fails, pi-suba runs
-`workmux remove --force <handle>`. A rollback failure reports the manual cleanup
-command while preserving both errors. If a Rex launch response is ambiguous, it
-preserves artifacts and the worktree rather than deleting files a child may be using;
-inspect the session before retrying.
+If a Rex launch response is ambiguous, pi-suba preserves artifacts rather than
+deleting files a child may be using; inspect the session before retrying.
 
 ## Child tools
 

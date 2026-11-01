@@ -54,27 +54,25 @@ describe("registry and widget", () => {
     expect(restored.get("a1")?.revision).toBe(3)
     expect(nextRevision(record(3), { state: "completed" }).revision).toBe(4)
   })
-  it("restores worktree launch metadata", () => {
-    const worktreeRecord = {
+  it("discards historical worktree metadata", () => {
+    const child = {
       ...record(1),
       worktree: {
         handle: "suba-auth-a1",
         branch: "suba-auth-a1",
         sourceCwd: "/repo",
-        worktreePath: "/repo__worktrees/suba-auth-a1",
-        workingDirectory: "/repo__worktrees/suba-auth-a1/packages/app",
+        worktreePath: "/w",
+        workingDirectory: "/w",
       },
     }
-    const restored = restoreRegistry([
-      { type: "custom", customType: "suba-child", data: worktreeRecord },
-    ])
-    expect(restored.get("a1")?.worktree).toEqual(worktreeRecord.worktree)
-    const completed: ChildRecord = { ...worktreeRecord, state: "completed" }
-    expect(isResumable(worktreeRecord, () => true)).toBe(false)
-    expect(isResumable(completed, () => true)).toBe(true)
+    const restored = restoreRegistry([{ type: "custom", customType: "suba-child", data: child }])
+    expect(restored.get("a1")).toEqual(record(1))
+  })
+  it("resumes only settled children whose directory still exists", () => {
+    const completed: ChildRecord = { ...record(1), state: "completed" }
+    expect(isResumable(record(1), () => true)).toBe(false)
+    expect(isResumable(completed, (path) => path === "/w")).toBe(true)
     expect(isResumable(completed, () => false)).toBe(false)
-    expect(isResumable(completed, (path) => path === completed.worktree?.worktreePath)).toBe(false)
-    expect(isResumable({ ...record(1), state: "completed" }, () => false)).toBe(true)
   })
 
   it("finds stored artifacts under their resource directory", () => {
@@ -108,38 +106,6 @@ describe("registry and widget", () => {
     const rows = projectWidgetRows([first, second], 20_000, 1)
     expect(rows.join("\n")).toContain("bash")
     expect(rows.at(-1)).toBe("+1 more")
-  })
-
-  it("marks only worktree children in plain and bordered rows", () => {
-    const isolated: ChildRecord = {
-      ...record(1),
-      worktree: {
-        handle: "suba-auth-a1",
-        branch: "suba-auth-a1",
-        sourceCwd: "/repo",
-        worktreePath: "/repo__worktrees/suba-auth-a1",
-        workingDirectory: "/repo__worktrees/suba-auth-a1",
-      },
-    }
-    const shared = { ...record(1), id: "b2", name: "review" }
-    const projection = projectWidget([isolated, shared], 20_000, 3)
-    expect(projection.items.map((item) => item.worktree)).toEqual([true, false])
-    const rows = projectWidgetRows([isolated, shared], 20_000, 3)
-    expect(rows[1]).toContain("● auth-tests ")
-    expect(rows[2]).not.toContain("")
-    const theme = {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    } as never
-    const widget = new ActivityWidget(() => projection, theme)
-    for (const width of [48, 80]) {
-      const lines = widget.render(width)
-      expect(lines[1]).toContain("● auth-tests ")
-      expect(lines[2]).not.toContain("")
-    }
-    for (let width = 1; width <= 100; width++) {
-      expect(widget.render(width).every((line) => visibleWidth(line) <= width)).toBe(true)
-    }
   })
 
   it("renders a bordered width-safe activity view", () => {

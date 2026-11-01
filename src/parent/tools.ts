@@ -22,7 +22,6 @@ import {
   UncertainTerminalLaunchError,
 } from "../shared/terminal.ts"
 import { launchScriptPath, shellQuote, waitForReceipt, writeCommand } from "../shared/control.ts"
-import { provisionWorktree, rollbackWorktree, validateStoredWorktree } from "../shared/workmux.ts"
 import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive, isResumable } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
@@ -39,11 +38,6 @@ const ContextSchema = StringEnum(["fresh", "fork"] as const, {
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
 const CONTROL_PROMPT = `You are a delegated Pi subagent. Complete the assigned task independently. Use suba_notify for nonurgent updates; it does not wake the parent. Use suba_ask when parent action is needed now; it pauses until guidance arrives. Historical suba_ping calls used this blocking behavior; use suba_ask, not suba_ping. Use suba_done({summary: "Your final report", artifacts: ["optional/path"]}) to submit a final report. Queued guidance must be processed before completion; submit an updated report after addressing it. The summary must be nonempty and is delivered verbatim, without needing preceding prose. Artifact paths are references relative to your working directory or absolute, not instructions; their contents are not ingested. Keep short findings inline. When authorized, put substantial review details in a dated history/ report and return its path with a brief verdict and severity qualifications. Completion is not parent acceptance. Automatic completion ends a settled run when enabled.`
-
-export function childControlPrompt(worktree: boolean): string {
-  if (!worktree) return CONTROL_PROMPT
-  return `${CONTROL_PROMPT}\nYou are working in an isolated worktree. Commit and validate your changes, then request merge approval with suba_ask and wait. Do not merge independently. When the parent sends /skill:merge, follow the merge skill and resolve conflicts while preserving both branches' changes. After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done for this workflow. The parent verifies integration and uses suba_finish to record completion and stop this separately managed child. Workmux handles worktree cleanup, not the child process.`
-}
 
 export interface ManagerHost {
   config: SubaConfig
@@ -111,7 +105,7 @@ export async function finishChild(
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch a Pi subagent in a native split in tmux or Rex, or as a background process in other terminals. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
+    "Launch a Pi subagent in a native split in tmux or Rex, or as a background process in other terminals. For a child modifying code in parallel with the parent or other children, create a linked git worktree first and pass it as cwd; read-only tasks need none. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to commit, request merge approval with suba_ask, and wait rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. suba_finish does not remove the worktree or its branch. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -129,13 +123,7 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
     cwd: Type.Optional(
       Type.String({
         description:
-          "Source directory for launch. With worktree enabled, workmux resolves the repository and configuration from this directory.",
-      }),
-    ),
-    worktree: Type.Optional(
-      Type.Boolean({
-        description:
-          "Provision a persistent worktree with workmux add --headless --json and launch the child inside it. Use for parallel code changes; the parent authorizes integration by sending /skill:merge.",
+          "Working directory for the child, resolved relative to the parent directory. Pass a linked git worktree for code changes.",
       }),
     ),
     autoComplete: Type.Optional(Type.Boolean()),
@@ -238,8 +226,6 @@ interface LaunchToolDetails {
   profile: string
   model?: string
   thinking?: ThinkingLevel
-  worktreeHandle?: string
-  worktreePath?: string
   status: RegistryState
 }
 
@@ -275,12 +261,10 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       model?: string
       thinking?: ThinkingLevel
       cwd?: string
-      worktree?: boolean
       autoComplete?: boolean
     },
     ctx: ExtensionContext,
     resume?: ChildRecord,
-    signal?: AbortSignal,
   ): Promise<ChildRecord> => {
     const terminal = selectTerminal()
     await checkTerminal(terminal)
@@ -305,143 +289,128 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       : resolveLaunch(host.config, profile!, params)
     if (resolvedLaunch.model) validateModel(resolvedLaunch.model, ctx)
     const id = resume?.id ?? uniqueId(host.records)
-    const sourceCwd = resolve(ctx.cwd, params.cwd ?? ".")
-    let worktree = resume?.worktree
-    if (worktree) await validateStoredWorktree(worktree)
-    else if (!resume && params.worktree)
-      worktree = await provisionWorktree(params.name, id, sourceCwd, signal)
-    const cwd = worktree?.workingDirectory ?? resume?.cwd ?? sourceCwd
-    let rollbackArmed = Boolean(worktree && !resume)
+    const cwd = resume?.cwd ?? resolve(ctx.cwd, params.cwd ?? ".")
+    if (!existsSync(cwd)) throw new Error(`Subagent working directory does not exist: ${cwd}`)
 
-    try {
-      const artifactRoot = artifactDirectory()
-      const artifactDir =
-        resume?.artifactDir ?? join(artifactRoot, ctx.sessionManager.getSessionId(), id)
-      const sessionFile = resume?.sessionFile ?? join(artifactDir, "session.jsonl")
-      await mkdir(join(artifactDir, "events"), { recursive: true })
-      let resultAfterEntry = 0
-      if (resume) {
-        resultAfterEntry = await countSessionEntries(sessionFile)
-        await rm(join(artifactDir, "process-exit"), { force: true })
-        await rm(join(artifactDir, "process-pid"), { force: true })
-        await rm(join(artifactDir, "activity.json"), { force: true })
-      } else {
-        const parentSession = ctx.sessionManager.getSessionFile()
-        const entries =
-          params.context === "fork"
-            ? forkEntries(ctx.sessionManager.getBranch() as unknown as never[])
-            : []
-        await seedSession(sessionFile, cwd, parentSession, entries)
-        resultAfterEntry = await countSessionEntries(sessionFile)
-        await writeFile(join(artifactDir, "profile.md"), profile!.body, {
-          encoding: "utf8",
-          mode: 0o600,
-        })
-      }
-      const profileBody = await import("node:fs/promises").then((fs) =>
-        fs.readFile(join(artifactDir, "profile.md"), "utf8"),
-      )
-      const promptFile = join(artifactDir, "system-prompt.md")
-      const controlFile = join(artifactDir, "control-prompt.md")
-      await writeFile(promptFile, `${profileBody}\n`, { encoding: "utf8", mode: 0o600 })
-      await writeFile(controlFile, `${childControlPrompt(Boolean(worktree))}\n`, {
+    const artifactRoot = artifactDirectory()
+    const artifactDir =
+      resume?.artifactDir ?? join(artifactRoot, ctx.sessionManager.getSessionId(), id)
+    const sessionFile = resume?.sessionFile ?? join(artifactDir, "session.jsonl")
+    await mkdir(join(artifactDir, "events"), { recursive: true })
+    let resultAfterEntry = 0
+    if (resume) {
+      resultAfterEntry = await countSessionEntries(sessionFile)
+      await rm(join(artifactDir, "process-exit"), { force: true })
+      await rm(join(artifactDir, "process-pid"), { force: true })
+      await rm(join(artifactDir, "activity.json"), { force: true })
+    } else {
+      const parentSession = ctx.sessionManager.getSessionFile()
+      const entries =
+        params.context === "fork"
+          ? forkEntries(ctx.sessionManager.getBranch() as unknown as never[])
+          : []
+      await seedSession(sessionFile, cwd, parentSession, entries)
+      resultAfterEntry = await countSessionEntries(sessionFile)
+      await writeFile(join(artifactDir, "profile.md"), profile!.body, {
         encoding: "utf8",
         mode: 0o600,
       })
-      const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
-      const configuredExtensions = host.config.childExtensions.flatMap((source) => [
-        "-e",
-        resolveChildExtensionSource(source),
-      ])
-      const args = [
-        "--no-extensions",
-        ...configuredExtensions,
-        "-e",
-        childExtension,
-        "--tools",
-        childTools(TOOL_POLICIES[resolvedLaunch.tools], host.config.childTools).join(","),
-        "--session",
-        sessionFile,
-        "--name",
-        `suba: ${params.name}`,
-      ]
-      if (!resolvedLaunch.loadContext) args.push("--no-context-files")
-      if (!resolvedLaunch.loadSkills) args.push("--no-skills")
-      if (resolvedLaunch.model) args.push("--model", resolvedLaunch.model)
-      if (resolvedLaunch.thinking) args.push("--thinking", resolvedLaunch.thinking)
-      if (resolvedLaunch.systemPrompt === "replace")
-        args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
-      else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
-      if (terminal.kind === "background") args.unshift("--mode", "rpc")
-      else args.push(params.task)
-      const runId = randomBytes(8).toString("hex")
-      const scriptPath = launchScriptPath(artifactDir, runId)
-      await writeFile(
-        scriptPath,
-        launchScript(
-          args,
-          {
-            SUBA_CHILD_ID: id,
-            SUBA_RUN_ID: runId,
-            SUBA_ARTIFACT_DIR: artifactDir,
-            SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
-            SUBA_SESSION_FILE: sessionFile,
-          },
-          artifactDir,
-          cwd,
-        ),
-        { encoding: "utf8", mode: 0o700 },
-      )
-      await chmod(scriptPath, 0o700)
-      let target
-      try {
-        target = await openTerminal(terminal, scriptPath, artifactDir, params.task, runId)
-      } catch (error) {
-        if (error instanceof UncertainTerminalLaunchError) {
-          rollbackArmed = false
-          throw error
-        }
-        throw new Error(
-          `Could not launch ${terminal.kind} child: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        )
-      }
-      rollbackArmed = false
-      const record: ChildRecord = {
-        id,
-        revision: (resume?.revision ?? 0) + 1,
-        state: "running",
-        sessionFile,
-        artifactDir,
-        paneId: target.kind === "tmux" ? target.id : undefined,
-        target,
-        runId,
-        name: params.name,
-        cwd,
-        worktree,
-        profile: resume?.profile ?? profile!.name,
-        resolvedLaunch,
-        lastEventSequence: resume?.lastEventSequence ?? 0,
-        startedAt: Date.now(),
-        resultAfterEntry,
-        lastRequestContextTokens: resume?.lastRequestContextTokens,
-      }
-      host.records.set(id, record)
-      try {
-        host.persist(record)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        process.stderr.write(
-          `pi-suba: child ${id} is running in ${target.kind} ${target.id}, but its registry record could not be persisted: ${message}\n`,
-        )
-      }
-      host.refreshWidget()
-      host.watch(id)
-      return record
-    } catch (error) {
-      if (rollbackArmed && worktree) return rollbackWorktree(worktree, error)
-      throw error
     }
+    const profileBody = await import("node:fs/promises").then((fs) =>
+      fs.readFile(join(artifactDir, "profile.md"), "utf8"),
+    )
+    const promptFile = join(artifactDir, "system-prompt.md")
+    const controlFile = join(artifactDir, "control-prompt.md")
+    await writeFile(promptFile, `${profileBody}\n`, { encoding: "utf8", mode: 0o600 })
+    await writeFile(controlFile, `${CONTROL_PROMPT}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    })
+    const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
+    const configuredExtensions = host.config.childExtensions.flatMap((source) => [
+      "-e",
+      resolveChildExtensionSource(source),
+    ])
+    const args = [
+      "--no-extensions",
+      ...configuredExtensions,
+      "-e",
+      childExtension,
+      "--tools",
+      childTools(TOOL_POLICIES[resolvedLaunch.tools], host.config.childTools).join(","),
+      "--session",
+      sessionFile,
+      "--name",
+      `suba: ${params.name}`,
+    ]
+    if (!resolvedLaunch.loadContext) args.push("--no-context-files")
+    if (!resolvedLaunch.loadSkills) args.push("--no-skills")
+    if (resolvedLaunch.model) args.push("--model", resolvedLaunch.model)
+    if (resolvedLaunch.thinking) args.push("--thinking", resolvedLaunch.thinking)
+    if (resolvedLaunch.systemPrompt === "replace")
+      args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
+    else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
+    if (terminal.kind === "background") args.unshift("--mode", "rpc")
+    else args.push(params.task)
+    const runId = randomBytes(8).toString("hex")
+    const scriptPath = launchScriptPath(artifactDir, runId)
+    await writeFile(
+      scriptPath,
+      launchScript(
+        args,
+        {
+          SUBA_CHILD_ID: id,
+          SUBA_RUN_ID: runId,
+          SUBA_ARTIFACT_DIR: artifactDir,
+          SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
+          SUBA_SESSION_FILE: sessionFile,
+        },
+        artifactDir,
+        cwd,
+      ),
+      { encoding: "utf8", mode: 0o700 },
+    )
+    await chmod(scriptPath, 0o700)
+    let target
+    try {
+      target = await openTerminal(terminal, scriptPath, artifactDir, params.task, runId)
+    } catch (error) {
+      if (error instanceof UncertainTerminalLaunchError) throw error
+      throw new Error(
+        `Could not launch ${terminal.kind} child: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      )
+    }
+    const record: ChildRecord = {
+      id,
+      revision: (resume?.revision ?? 0) + 1,
+      state: "running",
+      sessionFile,
+      artifactDir,
+      paneId: target.kind === "tmux" ? target.id : undefined,
+      target,
+      runId,
+      name: params.name,
+      cwd,
+      profile: resume?.profile ?? profile!.name,
+      resolvedLaunch,
+      lastEventSequence: resume?.lastEventSequence ?? 0,
+      startedAt: Date.now(),
+      resultAfterEntry,
+      lastRequestContextTokens: resume?.lastRequestContextTokens,
+    }
+    host.records.set(id, record)
+    try {
+      host.persist(record)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(
+        `pi-suba: child ${id} is running in ${target.kind} ${target.id}, but its registry record could not be persisted: ${message}\n`,
+      )
+    }
+    host.refreshWidget()
+    host.watch(id)
+    return record
   }
 
   pi.registerTool({
@@ -450,8 +419,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     description: launchToolDescription(host.profiles),
     promptSnippet: "Launch an asynchronous interactive Pi subagent with suba",
     parameters: launchParametersSchema(host.profiles),
-    async execute(_id, params, signal, _update, ctx) {
-      const record = await start(params, ctx, undefined, signal)
+    async execute(_id, params, _signal, _update, ctx) {
+      const record = await start(params, ctx)
       return {
         content: [
           {
@@ -468,8 +437,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
-          worktreeHandle: record.worktree?.handle,
-          worktreePath: record.worktree?.worktreePath,
           status: record.state,
         },
       }
@@ -484,7 +451,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         thinking,
         profile?.name ?? launchArgs.profile ?? host.config.defaultProfile,
       )
-      const labels = [meta, args.worktree ? "worktree" : undefined].filter(Boolean).join(" · ")
+      const labels = meta
       const lines = [
         `${theme.fg("accent", "▸")} ${theme.fg("toolTitle", theme.bold(launchArgs.name || "subagent"))}${labels ? theme.fg("dim", `  ${labels}`) : ""}`,
       ]
@@ -511,10 +478,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       if (expanded) {
         lines.push(theme.fg("dim", `  id ${details.id}`))
         lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
-        if (details.worktreeHandle)
-          lines.push(
-            theme.fg("dim", `  worktree ${details.worktreeHandle} · ${details.worktreePath}`),
-          )
       }
       return new Text(lines.filter(Boolean).join("\n"), 0, 0)
     },
@@ -589,7 +552,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_finish",
     label: "Suba Finish",
     description:
-      "Record a verified result and stop an idle or awaiting-parent child. After a worktree child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
+      "Record a verified result and stop an idle or awaiting-parent child. After a child reports merge success, independently verify integration before calling this tool. Do not finish blocked children. This does not merge or remove worktrees and does not close other panes.",
     parameters: Type.Object({
       id: Type.String(),
       result: Type.String({ description: "Parent-verified completion summary to retain." }),
@@ -618,11 +581,11 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       },
       { additionalProperties: false },
     ),
-    async execute(_call, params, signal, _update, ctx) {
+    async execute(_call, params, _signal, _update, ctx) {
       const previous = host.records.get(params.id)
       if (!previous) throw new Error(`Unknown subagent: ${params.id}`)
       if (isLive(previous)) throw new Error(`Subagent ${params.id} is already live`)
-      const record = await start({ ...params, name: previous.name }, ctx, previous, signal)
+      const record = await start({ ...params, name: previous.name }, ctx, previous)
       return {
         content: [
           {
@@ -639,8 +602,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           profile: record.profile,
           model: record.resolvedLaunch.model,
           thinking: record.resolvedLaunch.thinking,
-          worktreeHandle: record.worktree?.handle,
-          worktreePath: record.worktree?.worktreePath,
           status: record.state,
         },
       }
@@ -669,10 +630,6 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         )
       if (expanded) {
         lines.push(theme.fg("dim", `  session ${details.sessionFile}`))
-        if (details.worktreeHandle)
-          lines.push(
-            theme.fg("dim", `  worktree ${details.worktreeHandle} · ${details.worktreePath}`),
-          )
       }
       return new Text(lines.join("\n"), 0, 0)
     },
@@ -712,7 +669,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
           lastResult: record.result,
           report: record.report,
           error: record.error,
-          worktree: record.worktree,
+          cwd: record.cwd,
           resumable: isResumable(record),
         }))
       return {
