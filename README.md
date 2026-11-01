@@ -496,6 +496,10 @@ receives more input.
 If a child closes before recording completion, it is marked interrupted. Use `suba_resume` with its
 stable child ID to continue the same session with a new task.
 
+If a live child's Pi session has reported no activity 60 seconds after launch, the parent gets one
+message asking it to inspect the child's terminal and launch script: the launch is usually waiting on
+an interactive prompt nobody is watching. The child stays running.
+
 `suba_send` delivers only to live children. If a known child has already reached a terminal state,
 its failed response says the message was not delivered, includes the bounded latest result or failure
 when available, and gives the stable ID for `suba_resume`. An unknown ID is reported separately and

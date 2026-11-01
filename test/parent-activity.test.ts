@@ -85,7 +85,7 @@ async function record(id: string, patch: Partial<ChildRecord> = {}): Promise<Chi
       autoComplete: false,
     },
     lastEventSequence: 0,
-    startedAt: 1,
+    startedAt: Date.now(),
     resultAfterEntry: 1,
     ...patch,
   }

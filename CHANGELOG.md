@@ -11,6 +11,7 @@ description: Release notes for pi-suba.
 - Track child processes independently of terminal panes, preserving artifacts and worktrees when a native launch cannot be confirmed.
 - Keep pre-inbox children watchable and finishable; resume them to enable inbox guidance.
 - Remove `worktree: true` and the workmux requirement: create a linked worktree with git and pass it as `cwd`. Children are resumable only while their working directory exists.
+- Ask the parent to inspect a live child whose Pi session has reported no activity 60 seconds after launch.
 
 ## v0.3.0 (2026-09-11)
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ChildWatcher } from "../src/parent/watcher.ts"
+import { ChildWatcher, STARTUP_TIMEOUT_MS } from "../src/parent/watcher.ts"
 import { restoreRegistry, type ChildRecord } from "../src/parent/registry.ts"
 import { seedSession } from "../src/shared/sessions.ts"
 import { writeEvent, type ChildActivity } from "../src/shared/protocol.ts"
@@ -362,5 +362,71 @@ describe("parent watcher", () => {
     })
     await watcher.check("abc")
     expect(record.state).toBe("awaiting-parent")
+  })
+
+  describe("startup watchdog", () => {
+    async function watch(patch: Partial<ChildRecord>, writeActivity = false) {
+      const dir = await mkdtemp(join(tmpdir(), "suba-startup-"))
+      await seedSession(join(dir, "session.jsonl"), "/tmp")
+      if (writeActivity)
+        await protocol.atomicWriteJson(join(dir, "activity.json"), {
+          version: 1,
+          childId: "abc",
+          sequence: 1,
+          updatedAt: Date.now(),
+          state: "starting",
+        } satisfies ChildActivity)
+      let record: ChildRecord = {
+        ...makeRecord(dir),
+        target: { kind: "tmux", id: "%9" },
+        ...patch,
+      }
+      const notifications: { type: string; content: string }[] = []
+      const watcher = new ChildWatcher(500, {
+        list: () => [record],
+        get: () => record,
+        update: (next, notification) => {
+          record = next
+          if (notification) notifications.push(notification)
+        },
+        activity: (next) => (record = next),
+      })
+      return {
+        dir,
+        notifications,
+        record: () => record,
+        check: () => watcher.check("abc"),
+      }
+    }
+
+    it("asks the parent once when a live child reports no activity after the timeout", async () => {
+      const child = await watch({ startedAt: Date.now() - STARTUP_TIMEOUT_MS - 1000 })
+      try {
+        await child.check()
+        await child.check()
+        expect(child.record().state).toBe("running")
+        expect(child.notifications).toHaveLength(1)
+        expect(child.notifications[0]?.type).toBe("ask")
+        expect(child.notifications[0]?.content).toContain("worker (abc) has not started")
+        expect(child.notifications[0]?.content).toContain("tmux target %9")
+        expect(child.notifications[0]?.content).toContain(join(child.dir, "launch.sh"))
+      } finally {
+        await rm(child.dir, { recursive: true, force: true })
+      }
+    })
+
+    it.each([
+      ["before the timeout", { startedAt: Date.now() }, false],
+      ["once the child reported activity", { startedAt: 1 }, true],
+    ] as const)("stays quiet %s", async (_label, patch, writeActivity) => {
+      const child = await watch(patch, writeActivity)
+      try {
+        await child.check()
+        expect(child.notifications).toEqual([])
+        expect(child.record().state).toBe("running")
+      } finally {
+        await rm(child.dir, { recursive: true, force: true })
+      }
+    })
   })
 })

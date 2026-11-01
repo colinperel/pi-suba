@@ -7,7 +7,12 @@ import {
   type ChildEvent,
 } from "../shared/protocol.ts"
 import { extractResult } from "../shared/sessions.ts"
-import { parentTeardownPath, processExists, rpcFailurePath } from "../shared/control.ts"
+import {
+  launchScriptPath,
+  parentTeardownPath,
+  processExists,
+  rpcFailurePath,
+} from "../shared/control.ts"
 import { closeTerminal, legacyPaneExists } from "../shared/terminal.ts"
 import type { ChildRecord } from "./registry.ts"
 
@@ -18,10 +23,16 @@ export interface WatcherCallbacks {
   activity(record: ChildRecord): void
 }
 
+// A child's Pi session writes activity.json as soon as it starts. A live child
+// with none by then is stuck before Pi loads, typically on an interactive
+// prompt in its terminal that nobody watches.
+export const STARTUP_TIMEOUT_MS = 60_000
+
 export class ChildWatcher {
   private timer?: NodeJS.Timeout
   private generation = 0
   private checks = new Map<string, Promise<void>>()
+  private startupWarned = new Set<string>()
   constructor(
     private readonly pollMs: number,
     private readonly callbacks: WatcherCallbacks,
@@ -294,6 +305,31 @@ export class ChildWatcher {
         type: "result",
         content: `Subagent ${record.name} (${id}) was interrupted because its process exited before completion.`,
       })
+      return
     }
+    this.warnIfNotStarted(record)
+  }
+  private warnIfNotStarted(record: ChildRecord): void {
+    if (record.state !== "running" || record.activity) return
+    const waited = Date.now() - record.startedAt
+    if (waited < STARTUP_TIMEOUT_MS) return
+    const key = `${record.id}:${record.runId ?? record.startedAt}`
+    if (this.startupWarned.has(key)) return
+    this.startupWarned.add(key)
+    const script = record.runId
+      ? launchScriptPath(record.artifactDir, record.runId)
+      : join(record.artifactDir, "launch.sh")
+    const terminal = record.target
+      ? `${record.target.kind} target ${record.target.id}`
+      : record.paneId
+        ? `tmux pane ${record.paneId}`
+        : "its terminal"
+    this.callbacks.update(
+      { ...record, revision: record.revision + 1 },
+      {
+        type: "ask",
+        content: `Subagent ${record.name} (${record.id}) has not started ${Math.round(waited / 1000)}s after launch: its Pi session has reported no activity. The launch may be waiting on an interactive prompt or stuck before Pi loads. Inspect ${terminal}; launch script: ${script}`,
+      },
+    )
   }
 }
