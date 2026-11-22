@@ -15,6 +15,7 @@ description: Release notes for pi-suba.
 - Keep pre-inbox children watchable and finishable; resume them to enable inbox guidance.
 - Remove `worktree: true` and the workmux requirement: create a linked worktree with git and pass it as `cwd`. Children are resumable only while their working directory exists.
 - Ask the parent to inspect a live child whose Pi session has reported no activity 60 seconds after launch.
+- Require Pi 1.6.0 and report terminal provider and overflow recovery failures for manual-completion children without ending sessions on user aborts.
 
 ## v0.3.0 (2026-09-11)
 

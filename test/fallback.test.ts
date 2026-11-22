@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
   ExtensionAPI,
-  ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, expect, it, vi } from "vitest"
@@ -50,7 +50,7 @@ it("launches and completes a child without tmux, Rex, or a TTY", async () => {
   const ctx = {
     cwd: root,
     sessionManager: { getSessionId: () => "parent", getSessionFile: () => undefined },
-  } as unknown as ExtensionContext
+  } as unknown as ExtensionToolContext
   await tools
     .get("suba")!
     .execute(

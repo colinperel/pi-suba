@@ -1,3 +1,4 @@
+import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { latestRequestContextTokens, requestContextTokens } from "../shared/context-tokens.ts"
@@ -11,7 +12,41 @@ import { ActivityRecorder } from "./activity.ts"
 import { EventWriter } from "./events.ts"
 
 type Lifecycle = "running" | "awaiting-parent" | "completing" | "terminated"
-type AssistantState = { stopReason?: string; errorMessage?: string }
+const TRUNCATION_ERROR = "response truncated at output token limit"
+
+function latestVisibleAssistant(ctx: ExtensionContext): {
+  message?: AssistantMessage
+  hiddenAttempt?: AssistantMessage
+} {
+  const branch = ctx.sessionManager.getBranch()
+  const seenEdits = new Set<string>()
+  const hidden = new Set<string>()
+  let hiddenAttempt: AssistantMessage | undefined
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index]
+    if (entry.type === "context_edit" && !seenEdits.has(entry.targetId)) {
+      seenEdits.add(entry.targetId)
+      if (entry.replacement === null) hidden.add(entry.targetId)
+    }
+    if (entry.type !== "message" || entry.message.role !== "assistant") continue
+    if (!hidden.has(entry.id)) return { message: entry.message, hiddenAttempt }
+    const { stopReason } = entry.message
+    if (
+      !hiddenAttempt &&
+      (stopReason === "error" || stopReason === "length" || stopReason === "aborted")
+    )
+      hiddenAttempt = entry.message
+  }
+  return { hiddenAttempt }
+}
+
+function latestAssistantWasAborted(message: AssistantMessage | undefined): boolean {
+  return (
+    message?.stopReason === "aborted" ||
+    (message?.stopReason === "error" &&
+      /\boperation was aborted\b/i.test(message.errorMessage ?? ""))
+  )
+}
 
 // Pi's sendUserMessage is fire-and-forget. Prompts dispatched while Pi is idle
 // collide if both pass preflight before either starts its run, and a prompt
@@ -35,6 +70,7 @@ export default function (pi: ExtensionAPI) {
   let preflight = false
   let deliveryProgress = 0
   let compacting = false
+  let overflowRecovery: { error: string } | "aborted" | undefined
   let latestContext: ExtensionContext | undefined
   const progress = () => {
     deliveryProgress = Date.now()
@@ -97,38 +133,15 @@ export default function (pi: ExtensionAPI) {
       })
     : undefined
 
-  const latestAssistant = (ctx: ExtensionContext): AssistantState | undefined => {
-    const branch = ctx.sessionManager.getBranch() as Array<{
-      type?: string
-      message?: AssistantState & { role?: string }
-    }>
-    for (let index = branch.length - 1; index >= 0; index--) {
-      const message = branch[index]?.message
-      if (branch[index]?.type === "message" && message?.role === "assistant") return message
-    }
-    return undefined
-  }
-  const latestAssistantError = (ctx: ExtensionContext): string | undefined => {
-    const message = latestAssistant(ctx)
-    return message?.stopReason === "error"
-      ? message.errorMessage || "provider request failed"
-      : undefined
-  }
-  const latestAssistantWasAborted = (ctx: ExtensionContext): boolean => {
-    const message = latestAssistant(ctx)
-    return (
-      message?.stopReason === "aborted" ||
-      (message?.stopReason === "error" &&
-        /\boperation was aborted\b/i.test(message.errorMessage ?? ""))
-    )
-  }
-  const finish = async (ctx: ExtensionContext, report?: CompletionReport): Promise<boolean> => {
-    if (lifecycle !== "running") return false
+  const finish = async (
+    ctx: ExtensionContext,
+    result?: { report: CompletionReport } | { error: string },
+  ) => {
+    if (lifecycle !== "running") return
     lifecycle = "completing"
     try {
-      const error = report ? undefined : latestAssistantError(ctx)
-      if (error) await events.failed(error)
-      else await events.completed(report)
+      if (result && "error" in result) await events.failed(result.error)
+      else await events.completed(result?.report)
     } catch (error) {
       lifecycle = "running"
       throw error
@@ -137,7 +150,6 @@ export default function (pi: ExtensionAPI) {
     lifecycle = "terminated"
     inbox?.stop()
     ctx.shutdown()
-    return true
   }
 
   pi.registerTool({
@@ -245,7 +257,14 @@ export default function (pi: ExtensionAPI) {
     progress()
   }
   pi.on("session_compact", compacted)
-  pi.on("session_compact_failed", compacted)
+  pi.on("session_compact_failed", (event) => {
+    compacted()
+    if (event.reason === "overflow") {
+      overflowRecovery = event.aborted
+        ? "aborted"
+        : { error: event.errorMessage || "context overflow recovery failed" }
+    }
+  })
   const resumeInput = async () => {
     progress()
     if (lifecycle === "awaiting-parent") {
@@ -263,6 +282,7 @@ export default function (pi: ExtensionAPI) {
     if (lifecycle === "running") return update()
   }
   pi.on("agent_start", (_event, ctx) => {
+    overflowRecovery = undefined
     if (lifecycle === "terminated" || lifecycle === "completing") {
       ctx.abort()
       return
@@ -291,13 +311,42 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_execution_end", () => working(() => activity.model()))
   pi.on("model_select", (event) => activity.selected(event.model.provider, event.model.id))
   pi.on("thinking_level_select", (event) => activity.thinking(event.level as ThinkingLevel))
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     await inbox?.poll()
     if (preflight || lifecycle !== "running" || ctx.hasPendingMessages()) return
+    const recovery = overflowRecovery
+    overflowRecovery = undefined
     if (pendingReport) {
-      await finish(ctx, pendingReport)
+      await finish(ctx, { report: pendingReport })
       pendingReport = undefined
-    } else if (automatic && !latestAssistantWasAborted(ctx)) await finish(ctx)
+      return
+    }
+    if (event.aborted) return activity.waiting()
+
+    const { message, hiddenAttempt } = latestVisibleAssistant(ctx)
+    // Pi can also compact for overflow after a successful turn, with no retry.
+    const turnFailed = hiddenAttempt !== undefined || message?.stopReason !== "stop"
+    if (turnFailed && recovery) {
+      if (recovery === "aborted") return activity.waiting()
+      return finish(ctx, recovery)
+    }
+    if (hiddenAttempt) {
+      // Pi hides the attempt before checking if there is anything to compact.
+      // Unlike a cancelled provider retry, an overflow or truncation is terminal here.
+      if (latestAssistantWasAborted(hiddenAttempt)) return activity.waiting()
+      const truncated = hiddenAttempt.stopReason === "length"
+      if (truncated || isContextOverflow(hiddenAttempt, ctx.model?.contextWindow)) {
+        const fallback = truncated ? TRUNCATION_ERROR : "context overflow recovery failed"
+        return finish(ctx, { error: hiddenAttempt.errorMessage || fallback })
+      }
+      return activity.waiting()
+    }
+    if (latestAssistantWasAborted(message)) return activity.waiting()
+    if (message?.stopReason === "error")
+      return finish(ctx, { error: message.errorMessage || "provider request failed" })
+    if (message?.stopReason === "length")
+      return finish(ctx, { error: message.errorMessage || TRUNCATION_ERROR })
+    if (automatic) await finish(ctx)
     else await activity.waiting()
   })
   pi.on("session_shutdown", async () => {

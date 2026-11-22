@@ -5,7 +5,6 @@ import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { formatRequestContext } from "../shared/context-tokens.ts"
 import { agentDirectory, artifactDirectory } from "../shared/paths.ts"
-import { StringEnum } from "@earendil-works/pi-ai"
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
@@ -26,14 +25,16 @@ import type { ChildRecord, RegistryState, ResolvedLaunch } from "./registry.ts"
 import { isLive, isResumable } from "./registry.ts"
 import { formatElapsed, shortModel } from "./widget.ts"
 
-const ThinkingSchema = StringEnum(THINKING_LEVELS, {
+const ThinkingSchema = Type.Enum(THINKING_LEVELS, {
+  type: "string",
   description:
     "Thinking level paired with an explicit model choice. Omit it to use the configured default.",
 })
 const ModelSchema = Type.String({
   description: "Fully qualified provider/model identifier. Omit it to use the configured default.",
 })
-const ContextSchema = StringEnum(["fresh", "fork"] as const, {
+const ContextSchema = Type.Enum(["fresh", "fork"], {
+  type: "string",
   description:
     "Conversation context for the child. A fresh child receives no parent conversation, so make its task self-contained or name the applicable handoff files. Use fork only when required context cannot be captured adequately in the task or handoff files.",
 })
@@ -133,7 +134,8 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
     {
       ...parameters,
       profile: Type.Optional(
-        StringEnum([...profiles.keys()], {
+        Type.Enum([...profiles.keys()], {
+          type: "string",
           description: "Subagent profile. Omit it to use the configured default profile.",
         }),
       ),
@@ -675,7 +677,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     description:
       "List subagent registry and live activity once when status details are needed. Never call repeatedly or combine with sleep to wait for results.",
     parameters: Type.Object({
-      status: Type.Optional(StringEnum(["running", "completed", "all"] as const)),
+      status: Type.Optional(Type.Enum(["running", "completed", "all"], { type: "string" })),
     }),
     async execute(_call, params) {
       const records = [...host.records.values()]

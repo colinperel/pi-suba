@@ -1,9 +1,12 @@
-import { validateToolArguments, type Tool as AiTool } from "@earendil-works/pi-ai"
+import {
+  createAssistantMessageEventStream,
+  validateToolArguments,
+  type Tool as AiTool,
+} from "@earendil-works/pi-ai"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  AgentSession,
   createEventBus,
   SessionManager,
   type ExtensionAPI,
@@ -17,6 +20,7 @@ import { atomicWriteJson, type ChildActivity, writeEvent } from "../src/shared/p
 import { seedSession } from "../src/shared/sessions.ts"
 import { createTarget, paneExists } from "../src/shared/tmux.ts"
 import { writeCommand } from "../src/shared/control.ts"
+import { createTestAgentSession, testModel } from "./fixtures/agent-session.ts"
 
 vi.mock("../src/shared/control.ts", async (original) => ({
   ...(await original<typeof import("../src/shared/control.ts")>()),
@@ -331,32 +335,55 @@ describe("parent activity event bus", () => {
       await parent.tick()
       const [message, options] = parent.sendMessage.mock.calls[0]!
       const sessionManager = SessionManager.inMemory(root)
-      const runtime = {
-        isStreaming,
-        agent: { state: { messages: [] }, steer: vi.fn(), followUp: vi.fn() },
-        sessionManager,
-        _runAgentPrompt: vi.fn(),
-        _emit: vi.fn(),
+      const session = await createTestAgentSession(sessionManager)
+      const response = createAssistantMessageEventStream()
+      const stream = vi.fn(() => response)
+      const started = new Promise<void>((resolve) => {
+        session.agent.streamFunction = () => {
+          resolve()
+          return stream()
+        }
+      })
+      const entries = () =>
+        sessionManager.getEntries().filter((entry) => entry.type === "custom_message")
+      try {
+        const prompt = isStreaming ? session.prompt("Continue working") : undefined
+        if (prompt) await Promise.race([started, prompt])
+        expect(session.isStreaming).toBe(isStreaming)
+        await session.sendCustomMessage(message, options)
+        if (prompt) {
+          expect(entries()).toEqual([])
+          response.push({
+            type: "done",
+            reason: "stop",
+            message: {
+              role: "assistant",
+              api: testModel.api,
+              provider: testModel.provider,
+              model: testModel.id,
+              stopReason: "stop",
+              content: [{ type: "text", text: "Turn finished" }],
+              timestamp: Date.now(),
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+            },
+          })
+          response.end()
+          await prompt
+        }
+        expect(stream).toHaveBeenCalledTimes(isStreaming ? 1 : 0)
+        expect(sessionManager.buildSessionContext().messages.at(-1)).toMatchObject(message)
+        expect(entries()).toEqual([expect.objectContaining({ type: "custom_message", ...message })])
+      } finally {
+        response.end()
+        session.dispose()
       }
-      await AgentSession.prototype.sendCustomMessage.call(
-        runtime as unknown as AgentSession,
-        message,
-        options,
-      )
-      expect(runtime._runAgentPrompt).not.toHaveBeenCalled()
-      expect(runtime.agent.steer).not.toHaveBeenCalled()
-      expect(runtime.agent.followUp).not.toHaveBeenCalled()
-      expect(runtime.agent.state.messages).toEqual([expect.objectContaining(message)])
-      expect(sessionManager.buildSessionContext().messages).toEqual([
-        expect.objectContaining(message),
-      ])
-      expect(sessionManager.getEntries()).toEqual([
-        expect.objectContaining({ type: "custom_message", ...message }),
-      ])
-      expect(runtime._emit.mock.calls.map(([event]) => event.type)).toEqual([
-        "message_start",
-        "message_end",
-      ])
       expect((await parent.list())[0]!.state).toBe("running")
     },
   )

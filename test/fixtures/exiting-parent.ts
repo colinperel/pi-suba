@@ -3,6 +3,7 @@ import { join } from "node:path"
 import type {
   ExtensionAPI,
   ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import parentExtension from "../../src/parent/index.ts"
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
       getSessionId: () => "exiting-parent",
       getSessionFile: () => undefined,
     },
-  } as unknown as ExtensionContext
+  } as unknown as ExtensionToolContext
   await parentExtension(pi)
   await handlers.get("session_start")!({}, ctx)
   await tools

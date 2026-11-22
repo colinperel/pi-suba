@@ -7,14 +7,19 @@ import {
   type AssistantMessage,
   type Model,
 } from "@earendil-works/pi-ai"
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolDefinition,
+import {
+  SessionManager,
+  SettingsManager,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ExtensionFactory,
+  type ExtensionToolContext,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import childExtension from "../src/child/index.ts"
 import { readActivity, readEvents } from "../src/shared/protocol.ts"
+import { createTestAgentSession, testModel as model } from "./fixtures/agent-session.ts"
 
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void
 type RegisteredTool = {
@@ -33,6 +38,7 @@ const originalAutoComplete = process.env.SUBA_AUTO_COMPLETE
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   if (originalChildId === undefined) delete process.env.SUBA_CHILD_ID
   else process.env.SUBA_CHILD_ID = originalChildId
   if (originalArtifactDir === undefined) delete process.env.SUBA_ARTIFACT_DIR
@@ -42,6 +48,341 @@ afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   )
+})
+
+describe.each(["0", "1"])("settled child outcomes (automatic=%s)", (automatic) => {
+  const assistant = (
+    id: string,
+    stopReason: AssistantMessage["stopReason"],
+    errorMessage?: string,
+  ) => ({
+    type: "message",
+    id,
+    message: { role: "assistant", stopReason, errorMessage },
+  })
+  const hide = (targetId: string) => ({ type: "context_edit", targetId, replacement: null })
+  const quotaError = assistant("attempt", "error", "quota exhausted")
+  const hiddenQuotaError = [quotaError, hide(quotaError.id)]
+  const normalStop = assistant("stop", "stop")
+  const overflowFailure = {
+    reason: "overflow",
+    aborted: false,
+    errorMessage: "Context overflow recovery failed: summarizer unavailable",
+  }
+
+  async function setup(branch: unknown[]) {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-settled-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "settled"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = automatic
+    const handlers = new Map<string, Handler>()
+    const tools = new Map<string, RegisteredTool>()
+    childExtension({
+      registerTool(tool: RegisteredTool & { name: string }) {
+        tools.set(tool.name, tool)
+      },
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    let shutdowns = 0
+    const ctx = {
+      hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => branch },
+      shutdown: () => {
+        shutdowns++
+      },
+    } as unknown as ExtensionContext
+    const emit = (name: string, event: object = {}) =>
+      handlers.get(name)?.(name === "agent_settled" ? { aborted: false, ...event } : event, ctx)
+    await emit("agent_start")
+    return {
+      emit,
+      report: (summary: string) =>
+        tools
+          .get("suba_done")!
+          .execute("call", { summary }, new AbortController().signal, () => {}, ctx),
+      events: () => readEvents(artifactDir, 0),
+      activity: () => readActivity(join(artifactDir, "activity.json"), "settled"),
+      shutdowns: () => shutdowns,
+    }
+  }
+
+  it.each([
+    {
+      label: "visible provider error",
+      branch: [quotaError, hide("other")],
+      error: "quota exhausted",
+    },
+    {
+      label: "overflow recovery failure",
+      branch: hiddenQuotaError,
+      compaction: overflowFailure,
+      error: overflowFailure.errorMessage,
+    },
+    {
+      label: "overflow recovery exhausted after a second truncated response",
+      branch: [...hiddenQuotaError, assistant("second-attempt", "length")],
+      compaction: {
+        ...overflowFailure,
+        willRetry: false,
+        errorMessage: "Truncated response recovery failed after one compact-and-retry attempt.",
+      },
+      error: "Truncated response recovery failed after one compact-and-retry attempt.",
+    },
+  ])("reports $label once, only after settling", async ({ branch, compaction, error }) => {
+    const child = await setup(branch)
+    await child.emit("agent_end")
+    if (compaction) await child.emit("session_compact_failed", compaction)
+    expect(await child.events()).toEqual([])
+    expect(child.shutdowns()).toBe(0)
+    await child.emit("agent_settled")
+    await child.emit("agent_settled")
+    expect(await child.events()).toMatchObject([{ type: "failed", sequence: 1, error }])
+    expect(child.shutdowns()).toBe(1)
+    expect((await child.activity()).state).toBe("done")
+  })
+
+  it.each([
+    { label: "an aborted assistant turn", branch: [assistant("abort", "aborted")] },
+    {
+      label: "an abort reported as an error",
+      branch: [assistant("abort", "error", "The operation was aborted.")],
+    },
+    { label: "a cancelled retry", branch: [normalStop, ...hiddenQuotaError] },
+    {
+      label: "a cancelled overflow compaction",
+      branch: [quotaError],
+      compaction: { ...overflowFailure, aborted: true },
+    },
+    {
+      label: "an aborted settle despite an overflow failure",
+      branch: [quotaError],
+      compaction: overflowFailure,
+      aborted: true,
+    },
+  ])("keeps waiting after $label", async ({ branch, compaction, aborted }) => {
+    const child = await setup(branch)
+    if (compaction) await child.emit("session_compact_failed", compaction)
+    await child.emit("agent_settled", aborted ? { aborted } : {})
+    expect(await child.events()).toEqual([])
+    expect(child.shutdowns()).toBe(0)
+    expect((await child.activity()).state).toBe("waiting")
+  })
+
+  it.each([
+    { label: "a normal turn", branch: [normalStop] },
+    { label: "a successful retry", branch: [...hiddenQuotaError, normalStop] },
+    {
+      label: "post-turn overflow compaction fails without a retry",
+      branch: [normalStop],
+      compaction: { ...overflowFailure, willRetry: false },
+    },
+    {
+      label: "post-turn overflow compaction is aborted without a retry",
+      branch: [normalStop],
+      compaction: { ...overflowFailure, aborted: true, willRetry: false },
+    },
+    {
+      label: "a threshold compaction failure",
+      branch: [normalStop],
+      compaction: { ...overflowFailure, reason: "threshold" },
+    },
+    {
+      label: "a new run after an overflow failure",
+      branch: [normalStop],
+      compaction: overflowFailure,
+      newRun: true,
+    },
+  ])("honors the completion mode after $label", async ({ branch, compaction, newRun }) => {
+    const child = await setup(branch)
+    if (compaction) await child.emit("session_compact_failed", compaction)
+    if (newRun) await child.emit("agent_start")
+    await child.emit("agent_settled")
+    if (automatic === "0") {
+      expect(await child.events()).toEqual([])
+      expect(child.shutdowns()).toBe(0)
+      expect((await child.activity()).state).toBe("waiting")
+    } else {
+      expect(await child.events()).toMatchObject([{ type: "completed" }])
+      expect(child.shutdowns()).toBe(1)
+      expect((await child.activity()).state).toBe("done")
+    }
+  })
+
+  it("delivers an explicit report even when overflow recovery fails", async () => {
+    const child = await setup(hiddenQuotaError)
+    await child.report("explicit report")
+    await child.emit("session_compact_failed", overflowFailure)
+    await child.emit("agent_settled")
+    expect(await child.events()).toMatchObject([
+      { type: "completed", report: { summary: "explicit report" } },
+    ])
+    expect(child.shutdowns()).toBe(1)
+  })
+})
+
+describe.each(["0", "1"])("Pi session settlement (automatic=%s)", (automatic) => {
+  const quotaError = "429 insufficient_quota"
+  const overflowError = "400 context_length_exceeded"
+  const truncationError = "response truncated at output token limit"
+  it.each([
+    { scenario: "cancelled retry", outcome: "waiting" },
+    { scenario: "terminal quota error", outcome: "failed", error: quotaError },
+    { scenario: "restored quota error", outcome: "failed", error: quotaError },
+    { scenario: "first-turn context overflow", outcome: "failed", error: overflowError },
+    {
+      scenario: "first-turn truncation",
+      outcome: "failed",
+      error: truncationError,
+    },
+    { scenario: "restored first-turn truncation", outcome: "failed", error: truncationError },
+    {
+      scenario: "failed post-turn compaction",
+      outcome: automatic === "0" ? "waiting" : "completed",
+    },
+  ])("reports $outcome after $scenario", async ({ scenario, outcome, error }) => {
+    const cancelledRetry = scenario === "cancelled retry"
+    const restoredTruncation = scenario === "restored first-turn truncation"
+    const restored = scenario === "restored quota error" || restoredTruncation
+    const firstTurnOverflow = scenario === "first-turn context overflow"
+    const truncated = scenario === "first-turn truncation" || restoredTruncation
+    const postTurnCompaction = scenario === "failed post-turn compaction"
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-agent-session-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "agent-session"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_AUTO_COMPLETE = automatic
+    vi.stubEnv("SUBA_RUN_ID", undefined)
+    const settingsManager = SettingsManager.inMemory({
+      retry: { enabled: true, maxRetries: 1, baseDelayMs: 1000 },
+      compaction: {
+        enabled: firstTurnOverflow || truncated || postTurnCompaction,
+        reserveTokens: 128,
+        keepRecentTokens: postTurnCompaction ? 32 : model.contextWindow,
+      },
+    })
+    const message = (
+      stopReason: "stop" | "error" | "length",
+      input: number,
+      errorMessage?: string,
+    ): AssistantMessage => ({
+      role: "assistant",
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      content: stopReason === "stop" ? [{ type: "text", text: "A completed turn." }] : [],
+      stopReason,
+      errorMessage,
+      timestamp: Date.now(),
+      usage: {
+        input,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: input,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    })
+    const sessionManager = SessionManager.inMemory(artifactDir)
+    if (postTurnCompaction) {
+      sessionManager.appendMessage({
+        role: "user",
+        content: "Earlier turn. ".repeat(20),
+        timestamp: Date.now(),
+      })
+      sessionManager.appendMessage(message("stop", 100))
+    }
+    const extensions: ExtensionFactory[] = [childExtension]
+    if (restored) {
+      extensions.push((pi) => {
+        pi.on("agent_before_settle", (event, ctx) => {
+          const attempt = ctx.sessionManager.getBranch().at(-1)
+          const entries = [...event.entries]
+          let targetId: string
+          if (truncated) {
+            if (attempt?.type !== "context_edit" || attempt.replacement !== null) return
+            targetId = attempt.targetId
+          } else {
+            if (attempt?.type !== "message" || attempt.message.role !== "assistant") return
+            targetId = attempt.id
+            entries.push({ type: "context_edit", targetId, replacement: null })
+          }
+          entries.push({ type: "context_edit", targetId, replacement: { content: [] } })
+          return { entries }
+        })
+      })
+    }
+    const session = await createTestAgentSession(sessionManager, settingsManager, extensions)
+    const stream = vi.fn()
+    session.agent.streamFunction = () => {
+      stream()
+      const response = createAssistantMessageEventStream()
+      if (postTurnCompaction && stream.mock.calls.length === 1) {
+        response.push({
+          type: "done",
+          reason: "stop",
+          message: message("stop", model.contextWindow + 1),
+        })
+      } else if (truncated) {
+        response.push({ type: "done", reason: "length", message: message("length", 0) })
+      } else {
+        const errorMessage = cancelledRetry
+          ? "503 Service Unavailable"
+          : firstTurnOverflow
+            ? overflowError
+            : quotaError
+        response.push({ type: "error", reason: "error", error: message("error", 0, errorMessage) })
+      }
+      response.end()
+      return response
+    }
+    const shutdownHandler = vi.fn()
+    const seen: object[] = []
+    session.subscribe((event) => {
+      // Pi sets up its backoff controller after broadcasting auto_retry_start.
+      if (cancelledRetry && event.type === "auto_retry_start")
+        queueMicrotask(() => session.abortRetry())
+      if (event.type === "auto_retry_end" || event.type === "compaction_end") seen.push(event)
+    })
+    try {
+      await session.bindExtensions({ shutdownHandler })
+      await session.prompt("Review")
+      expect(stream).toHaveBeenCalledTimes(postTurnCompaction ? 2 : 1)
+      const edits = sessionManager.getBranch().filter((entry) => entry.type === "context_edit")
+      if (restored) {
+        expect(edits.map((entry) => entry.replacement)).toEqual([null, { content: [] }])
+        expect(edits[0].targetId).toBe(edits[1].targetId)
+      } else if (cancelledRetry || firstTurnOverflow || truncated) {
+        expect(edits.map((entry) => entry.replacement)).toEqual([null])
+      }
+      if (cancelledRetry) {
+        expect(seen).toMatchObject([{ type: "auto_retry_end", finalError: "Retry cancelled" }])
+      } else if (postTurnCompaction) {
+        expect(seen).toMatchObject([
+          {
+            type: "compaction_end",
+            reason: "overflow",
+            willRetry: false,
+            aborted: false,
+            errorMessage: expect.stringContaining(quotaError),
+          },
+        ])
+      } else expect(seen).toEqual([])
+      const events = await readEvents(artifactDir, 0)
+      if (outcome === "waiting") expect(events).toEqual([])
+      else if (outcome === "failed") expect(events).toMatchObject([{ type: "failed", error }])
+      else expect(events).toMatchObject([{ type: "completed" }])
+      expect(shutdownHandler).toHaveBeenCalledTimes(outcome === "waiting" ? 0 : 1)
+      expect((await readActivity(join(artifactDir, "activity.json"), "agent-session")).state).toBe(
+        outcome === "waiting" ? "waiting" : "done",
+      )
+    } finally {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" })
+      session.dispose()
+    }
+  })
 })
 
 describe("child completion", () => {
@@ -134,7 +475,7 @@ describe("child completion", () => {
         abort() {
           agent.abort()
         },
-      } as unknown as ExtensionContext
+      } as unknown as ExtensionToolContext
       agent.state.tools = tools.map((tool) => ({
         ...tool,
         execute: (id, args, signal, update) => tool.execute(id, args, signal, update, ctx),

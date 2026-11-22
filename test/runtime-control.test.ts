@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
   ExtensionAPI,
-  ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, expect, it, vi } from "vitest"
@@ -132,7 +132,7 @@ for (const terminal of ["background", "tmux", "rex"] as const) {
       const ctx = {
         cwd: root,
         sessionManager: { getSessionId: () => "parent", getSessionFile: () => undefined },
-      } as unknown as ExtensionContext
+      } as unknown as ExtensionToolContext
       const execute = (name: string, params: Record<string, unknown>) =>
         tools.get(name)!.execute("call", params, new AbortController().signal, undefined, ctx)
       await execute("suba", { name: "runtime", task: "/suba-test-wait" })

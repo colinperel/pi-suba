@@ -19,7 +19,7 @@ child result; results and help requests arrive asynchronously in the parent sess
 
 ## Requirements
 
-- [Pi](https://pi.dev)
+- [Pi](https://pi.dev) 1.6.0 or later
 - macOS or Linux (`/bin/sh` and `ps`)
 - Optional: `tmux` or `rex` on `PATH` for native visible splits
 
@@ -506,12 +506,13 @@ child's state, current model or tool activity, thinking level, and elapsed time.
 Completed reports appear as compact previews. Expand the message with Pi's normal tool-output
 control to read the full report and metadata.
 
-With automatic completion enabled, a child finishes when its agent settles. Set `autoComplete` or
-profile `auto-complete` to `false` to keep it interactive until it calls `suba_done`, exits, or
-receives more input.
+With automatic completion enabled, a child completes when its agent settles successfully. Set
+`autoComplete` or profile `auto-complete` to `false` to keep it interactive between turns until it
+calls `suba_done` or exits. A terminal provider error or failed overflow recovery ends the child
+and reports the failure to the parent in either mode. User-aborted turns leave the child waiting.
 
-If a child closes before recording completion, it is marked interrupted. Use `suba_resume` with its
-stable child ID to continue the same session with a new task.
+If a child closes without a result, it can be marked interrupted. Use `suba_resume` with its stable
+child ID to continue the same session with a new task.
 
 If a live child's Pi session has reported no activity 60 seconds after launch, the parent gets one
 message asking it to inspect the child's terminal and launch script: the launch is usually waiting on
