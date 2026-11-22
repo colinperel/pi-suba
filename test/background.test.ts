@@ -134,13 +134,27 @@ it("passes configured flags to child extensions, with profile values first", asy
     childFlags: { "suba-test-value": "config", "suba-test-switch": true },
   }
   const profile = app.host.profiles.get("default")!
-  app.host.profiles.set("default", { ...profile, flags: { "suba-test-value": "profile value" } })
+  app.host.profiles.set("default", {
+    ...profile,
+    flags: { "suba-test-value": "  profile value  ", "suba-test-switch": false },
+  })
   const child = await app.launch("/suba-test-wait")
   await app.waitForState(child, "awaiting-parent")
-  expect(JSON.parse(await readFile(join(child.artifactDir, "flags.json"), "utf8"))).toEqual({
-    value: "profile value",
-    switch: true,
-  })
+  const flags = async () =>
+    JSON.parse(await readFile(join(child.artifactDir, "flags.json"), "utf8"))
+  expect(await flags()).toEqual({ value: "  profile value  ", switch: null })
+
+  // Resume reuses the flags saved at launch, not later configuration.
+  app.host.config = { ...app.host.config, childFlags: { "suba-test-value": "changed" } }
+  app.host.profiles.set("default", profile)
+  await rm(join(child.artifactDir, "flags.json"))
+  await closeTerminal(child.target!)
+  await app.waitForState(child, "interrupted")
+  await app.execute("suba_resume", { id: child.id, task: "/suba-test-wait" })
+  const next = app.host.records.get(child.id)!
+  app.cleanupChild(next)
+  await app.waitForState(next, "awaiting-parent")
+  expect(await flags()).toEqual({ value: "  profile value  ", switch: null })
   await app.execute("suba_finish", { id: child.id, result: "Verified child flags" })
 }, 20000)
 

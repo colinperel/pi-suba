@@ -10,11 +10,11 @@ describe("configuration", () => {
         thinking: "high",
         childExtensions: ["../../code/pi-cc-tools-local"],
         childTools: ["process"],
-        childFlags: { "service-tier": " fast ", plan: true },
+        childFlags: { "service-tier": " fast ", plan: true, snake_case: "" },
         activity: { pollMs: 200, maxRows: 3 },
       }),
     ).toMatchObject({
-      childFlags: { "service-tier": "fast", plan: true },
+      childFlags: { "service-tier": " fast ", plan: true, snake_case: "" },
       defaultProfile: "explore",
       thinking: "high",
       childExtensions: ["../../code/pi-cc-tools-local"],
@@ -41,7 +41,8 @@ describe("configuration", () => {
     expect(() => parseConfig({ activity: { pollMs: 10 } })).toThrow("between 100")
     expect(() => parseConfig({ childExtensions: ["same", "same"] })).toThrow("duplicates")
     expect(() => parseConfig({ childFlags: { "--model": "x" } })).toThrow("invalid flag name")
-    expect(() => parseConfig({ childFlags: { tier: 1 } })).toThrow("non-empty string")
+    expect(() => parseConfig({ childFlags: { "a=b": "x" } })).toThrow("invalid flag name")
+    expect(() => parseConfig({ childFlags: { tier: 1 } })).toThrow("string or boolean")
     expect(() => parseConfig({ childTools: ["read,process"] })).toThrow("single tool name")
   })
 })

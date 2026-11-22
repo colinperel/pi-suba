@@ -339,8 +339,10 @@ extension that registers `process`.
 
 `childFlags` passes CLI flags registered by child extensions (`pi.registerFlag`). A string value
 becomes `--name=value`; `true` passes a boolean flag and `false` omits it. A profile's `flags` map
-overrides individual entries, so a profile can change or omit a flag set for every child. A child
-fails to start with "Unknown option" when no loaded child extension registers a flag.
+overrides individual entries, so a profile can change or omit a flag set for every child. String
+values pass through unchanged. A child fails to start with "Unknown option" when no loaded child
+extension registers a flag. `suba_resume` reuses the flags saved at launch, so a configuration or
+profile change, including a fixed flag name, applies only to children launched afterward.
 
 Configuration and profiles are read when the parent session starts.
 

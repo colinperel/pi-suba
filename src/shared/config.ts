@@ -82,9 +82,12 @@ export function parseChildFlags(value: unknown, label: string): ChildFlags {
   const input = object(value, label)
   const result: ChildFlags = {}
   for (const [name, flag] of Object.entries(input)) {
-    if (!/^[a-z][a-z0-9-]*$/.test(name))
+    // Pi splits --name=value at the first "=", so only such names are ambiguous.
+    if (!name || name.includes("=") || name.startsWith("-"))
       throw new Error(`${label} has an invalid flag name: ${name}`)
-    result[name] = typeof flag === "boolean" ? flag : string(flag, `${label}.${name}`).trim()
+    if (typeof flag !== "boolean" && typeof flag !== "string")
+      throw new Error(`${label}.${name} must be a string or boolean`)
+    result[name] = flag
   }
   return result
 }
