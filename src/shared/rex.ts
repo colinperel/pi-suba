@@ -18,6 +18,7 @@ export interface RexTarget {
 }
 
 export class UncertainRexLaunchError extends Error {}
+class MissingRexAnchorError extends Error {}
 
 export type RexExec = (args: string[]) => Promise<string>
 
@@ -145,34 +146,89 @@ interface PositionedWorker {
   rect: [number, number, number, number]
 }
 
-function collectOwnedLeaves(
+interface VerticalGroup {
+  height: number
+  workers: PositionedWorker[]
+  bottomWorker: PositionedWorker
+}
+
+function compareWorkerPosition(left: PositionedWorker, right: PositionedWorker): number {
+  return left.rect[1] - right.rect[1] || left.rect[0] - right.rect[0]
+}
+
+function analyzeColumnGroups(
   node: RexLayoutNode,
   ownedIds: ReadonlySet<string>,
-): PositionedWorker[] {
+): { allOwned: boolean; workers: PositionedWorker[]; groups: VerticalGroup[] } {
   if (node.block_id) {
-    return ownedIds.has(node.block_id) ? [{ blockId: node.block_id, rect: node.rect }] : []
+    if (!ownedIds.has(node.block_id)) return { allOwned: false, workers: [], groups: [] }
+    const worker: PositionedWorker = { blockId: node.block_id, rect: node.rect }
+    return {
+      allOwned: true,
+      workers: [worker],
+      groups: [{ height: node.rect[3], workers: [worker], bottomWorker: worker }],
+    }
   }
-  if (!node.split) return []
-  return [
-    ...collectOwnedLeaves(node.split.before, ownedIds),
-    ...collectOwnedLeaves(node.split.after, ownedIds),
-  ]
+  if (!node.split) return { allOwned: false, workers: [], groups: [] }
+  const before = analyzeColumnGroups(node.split.before, ownedIds)
+  const after = analyzeColumnGroups(node.split.after, ownedIds)
+  const workers = [...before.workers, ...after.workers]
+  if (
+    node.split.direction === "vertical" &&
+    before.allOwned &&
+    after.allOwned &&
+    before.workers.length > 0 &&
+    after.workers.length > 0
+  ) {
+    const sorted = [...workers].sort(compareWorkerPosition)
+    return {
+      allOwned: true,
+      workers: sorted,
+      groups: [{ height: node.rect[3], workers: sorted, bottomWorker: sorted.at(-1)! }],
+    }
+  }
+  return {
+    allOwned: false,
+    workers,
+    groups: [...before.groups, ...after.groups],
+  }
+}
+
+function selectColumnAnchor(groups: readonly VerticalGroup[]): PositionedWorker | undefined {
+  let best: VerticalGroup | undefined
+  let bestProjectedHeight = -1
+  for (const group of groups) {
+    const projectedHeight = group.height / (group.workers.length + 1)
+    if (
+      !best ||
+      projectedHeight > bestProjectedHeight + RATIO_EPSILON ||
+      (Math.abs(projectedHeight - bestProjectedHeight) <= RATIO_EPSILON &&
+        compareWorkerPosition(group.bottomWorker, best.bottomWorker) > 0)
+    ) {
+      best = group
+      bestProjectedHeight = projectedHeight
+    }
+  }
+  return best?.bottomWorker
 }
 
 export function findRightColumn(
   layout: RexLayoutNode,
   parentId: string,
   ownedIds: ReadonlySet<string>,
-): { columnRoot: RexLayoutNode; workers: PositionedWorker[] } | undefined {
+):
+  | { columnRoot: RexLayoutNode; workers: PositionedWorker[]; anchor: PositionedWorker }
+  | undefined {
   const path = findPathToBlock(layout, parentId)
   if (!path) return undefined
   for (let i = path.length - 1; i >= 0; i -= 1) {
     const step = path[i]!
     if (step.split.direction !== "horizontal" || step.side !== "before") continue
-    const workers = collectOwnedLeaves(step.split.after, ownedIds)
-    if (workers.length > 0) {
-      workers.sort((left, right) => left.rect[1] - right.rect[1] || left.rect[0] - right.rect[0])
-      return { columnRoot: step.split.after, workers }
+    const analysis = analyzeColumnGroups(step.split.after, ownedIds)
+    const anchor = selectColumnAnchor(analysis.groups)
+    if (analysis.workers.length > 0 && anchor) {
+      const workers = [...analysis.workers].sort(compareWorkerPosition)
+      return { columnRoot: step.split.after, workers, anchor }
     }
   }
   return undefined
@@ -256,6 +312,43 @@ async function inspectSession(sessionId: string, run: RexExec): Promise<RexSessi
   return JSON.parse(stdout) as RexSessionView
 }
 
+function diagnosticLines(error: unknown): string[] {
+  if (typeof error === "object" && error !== null && "stderr" in error) {
+    const stderr = (error as { stderr?: unknown }).stderr
+    const text =
+      typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : ""
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+  }
+  return error instanceof Error
+    ? error.message
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    : []
+}
+
+function isExplicitMissingAnchorError(error: unknown, anchorId: string): boolean {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "killed" in error &&
+    Boolean((error as { killed?: unknown }).killed)
+  ) {
+    return false
+  }
+  const lines = diagnosticLines(error)
+  if (lines.length === 0) return false
+  const exactRexNotFound = `error: block target "${anchorId.toLowerCase()}" not found`
+  const exactLegacyNotFound = `no such block: ${anchorId.toLowerCase()}`
+  return lines.some((line) => {
+    const normalized = line.toLowerCase()
+    return normalized === exactRexNotFound || normalized === exactLegacyNotFound
+  })
+}
+
 async function splitBlock(
   sessionId: string | undefined,
   anchorId: string,
@@ -263,9 +356,11 @@ async function splitBlock(
   ratio: number,
   scriptPath: string,
   run: RexExec,
+  allowMissingAnchor = false,
 ): Promise<string> {
+  let stdout: string
   try {
-    const stdout = await run([
+    stdout = await run([
       "split",
       ...rexScope(sessionId),
       "-b",
@@ -277,6 +372,14 @@ async function splitBlock(
       "--",
       scriptPath,
     ])
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (allowMissingAnchor && isExplicitMissingAnchorError(error, anchorId)) {
+      throw new MissingRexAnchorError(message, { cause: error })
+    }
+    throw new UncertainRexLaunchError(message, { cause: error })
+  }
+  try {
     const result = JSON.parse(stdout) as { block_ids?: unknown[] }
     const id = result.block_ids?.[0]
     if (typeof id !== "string" || !id) throw new Error("Rex split returned no block ID")
@@ -288,27 +391,16 @@ async function splitBlock(
   }
 }
 
-function isAmbiguousTimeoutError(error: unknown): boolean {
-  const target = error instanceof UncertainRexLaunchError ? error.cause : error
-  if (
-    typeof target === "object" &&
-    target !== null &&
-    "killed" in target &&
-    Boolean((target as { killed?: unknown }).killed)
-  ) {
-    return true
-  }
-  const message = error instanceof Error ? error.message : String(error)
-  return /timed?s*out|deadline/i.test(message)
-}
-
 async function equalizeRightColumn(
   sessionId: string,
   parentId: string,
   ownedIds: ReadonlySet<string>,
   run: RexExec,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const maxSteps = Math.max(1, ownedIds.size)
+  let retriesLeft = 1
+  let lastStepKey: string | undefined
+  for (let iteration = 0; iteration < maxSteps; iteration += 1) {
     try {
       const view = await inspectSession(sessionId, run)
       const layout = findParentLayout(view, parentId)
@@ -316,24 +408,30 @@ async function equalizeRightColumn(
       const column = findRightColumn(layout, parentId, ownedIds)
       if (!column || column.workers.length < 2) return
       const steps = planVerticalEqualization(column.columnRoot, ownedIds)
-      for (const step of steps) {
-        await run([
-          "api",
-          "call",
-          ...rexScope(sessionId),
-          "session.resize_pane",
-          JSON.stringify({
-            direction: "vertical",
-            before_block_id: step.beforeBlockId,
-            after_block_id: step.afterBlockId,
-            ratio: step.ratio,
-          }),
-        ])
-      }
-      return
+      const step = steps[0]
+      if (!step) return
+      const stepKey = `${step.beforeBlockId}\0${step.afterBlockId}\0${step.ratio}`
+      if (stepKey === lastStepKey) return
+      lastStepKey = stepKey
+      await run([
+        "api",
+        "call",
+        ...rexScope(sessionId),
+        "session.resize_pane",
+        JSON.stringify({
+          direction: "vertical",
+          before_block_id: step.beforeBlockId,
+          after_block_id: step.afterBlockId,
+          ratio: step.ratio,
+        }),
+      ])
+      if (steps.length === 1) return
     } catch {
       // Best-effort layout equalization: the worker split is already live.
       // Retry once in case a sibling exited mid-equalization, then keep going.
+      if (retriesLeft === 0) return
+      retriesLeft -= 1
+      lastStepKey = undefined
     }
   }
 }
@@ -396,7 +494,7 @@ export async function createRexTarget(
       if (column) {
         for (const worker of column.workers) owned.add(worker.blockId)
       }
-      const anchor = column?.workers.at(-1)
+      const anchor = column?.anchor
 
       if (!anchor) {
         const id = await splitBlock(
@@ -419,6 +517,7 @@ export async function createRexTarget(
           REX_STACK_RATIO,
           scriptPath,
           run,
+          true,
         )
         owned.add(id)
         candidates.add(id)
@@ -427,15 +526,17 @@ export async function createRexTarget(
         }
         return { id, sessionId }
       } catch (error) {
-        if (isAmbiguousTimeoutError(error)) throw error
+        if (!(error instanceof MissingRexAnchorError)) throw error
         let freshView: RexSessionView
         try {
           freshView = await inspectSession(sessionId, run)
         } catch {
-          throw error
+          throw new UncertainRexLaunchError(error.message, { cause: error })
         }
         const freshIds = collectSessionBlockIds(freshView)
-        if (freshIds.has(anchor.blockId)) throw error
+        if (freshIds.has(anchor.blockId)) {
+          throw new UncertainRexLaunchError(error.message, { cause: error })
+        }
         owned.delete(anchor.blockId)
         candidates.delete(anchor.blockId)
         view = freshView

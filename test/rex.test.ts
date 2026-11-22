@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import {
   createRexTarget,
   REX_FIRST_WORKER_RATIO,
+  UncertainRexLaunchError,
   type RexExec,
   type RexLayoutNode,
   type RexSessionView,
@@ -410,7 +411,7 @@ describe("rex layout management", () => {
         closedOnce = true
         const anchorId = args[args.indexOf("-b") + 1]!
         server.close(anchorId)
-        throw new Error(`No such block: ${anchorId}`)
+        throw new Error(`Error: block target "${anchorId}" not found`)
       }
       return baseRun(args)
     }
@@ -422,6 +423,140 @@ describe("rex layout management", () => {
     expect(server.rects().get("block:parent")![2]).toBeCloseTo(0.65, 6)
     expect(server.rects().get(w2.id)![2]).toBeCloseTo(0.35, 6)
     expect(server.rects().get(w2.id)![3]).toBeCloseTo(1, 6)
+  })
+
+  it("does not retry when a split response is lost even if the anchor exits before re-inspect", async () => {
+    const server = new FakeRexServer("session:eof", "block:parent")
+    const ownedBlocks = new Set<string>()
+    const baseRun = server.exec()
+    let splitCalls = 0
+    const run: RexExec = async (args) => {
+      if (args[0] === "split" && args.includes("--split=below")) {
+        splitCalls += 1
+        const anchorId = args[args.indexOf("-b") + 1]!
+        // Simulate Rex creating the worker, losing the response, and the anchor exiting.
+        server.split(anchorId, "below", 50)
+        server.close(anchorId)
+        throw new Error("unexpected EOF")
+      }
+      return baseRun(args)
+    }
+    const host = { parentId: "block:parent", sessionId: "session:eof" }
+
+    await createRexTarget(host, "/tmp/w1.sh", { ownedBlocks, run })
+    await expect(createRexTarget(host, "/tmp/w2.sh", { ownedBlocks, run })).rejects.toBeInstanceOf(
+      UncertainRexLaunchError,
+    )
+    expect(splitCalls).toBe(1)
+  })
+
+  it("ignores argv paths in execFile messages when deciding whether to retry a missing anchor", async () => {
+    const server = new FakeRexServer("session:argv", "block:parent")
+    const ownedBlocks = new Set<string>()
+    const baseRun = server.exec()
+    let notFoundPathSplitCalls = 0
+    const runNotFoundPath: RexExec = async (args) => {
+      if (args[0] === "split" && args.includes("--split=below")) {
+        notFoundPathSplitCalls += 1
+        const anchorId = args[args.indexOf("-b") + 1]!
+        server.split(anchorId, "below", 50)
+        server.close(anchorId)
+        const error = Object.assign(
+          new Error(
+            `Command failed: rex split -b ${anchorId} -- /tmp/not_found/launch.sh\nconnection reset by peer`,
+          ),
+          { stderr: "connection reset by peer\n" },
+        )
+        throw error
+      }
+      return baseRun(args)
+    }
+    const host = { parentId: "block:parent", sessionId: "session:argv" }
+    await createRexTarget(host, "/tmp/not_found/w1.sh", { ownedBlocks, run: runNotFoundPath })
+    await expect(
+      createRexTarget(host, "/tmp/not_found/w2.sh", { ownedBlocks, run: runNotFoundPath }),
+    ).rejects.toBeInstanceOf(UncertainRexLaunchError)
+    expect(notFoundPathSplitCalls).toBe(1)
+
+    const server2 = new FakeRexServer("session:deadline-path", "block:parent")
+    const owned2 = new Set<string>()
+    const baseRun2 = server2.exec()
+    let closedOnce = false
+    const runDeadlinePath: RexExec = async (args) => {
+      if (args[0] === "split" && args.includes("--split=below") && !closedOnce) {
+        closedOnce = true
+        const anchorId = args[args.indexOf("-b") + 1]!
+        server2.close(anchorId)
+        const stderr = `Error: block target "${anchorId}" not found\n`
+        const error = Object.assign(
+          new Error(`Command failed: rex split -b ${anchorId} -- /tmp/deadline/w2.sh\n${stderr}`),
+          { stderr },
+        )
+        throw error
+      }
+      return baseRun2(args)
+    }
+    const host2 = { parentId: "block:parent", sessionId: "session:deadline-path" }
+    await createRexTarget(host2, "/tmp/deadline/w1.sh", {
+      ownedBlocks: owned2,
+      run: runDeadlinePath,
+    })
+    const recovered = await createRexTarget(host2, "/tmp/deadline/w2.sh", {
+      ownedBlocks: owned2,
+      run: runDeadlinePath,
+    })
+    expect(server2.rects().get(recovered.id)![2]).toBeCloseTo(0.35, 6)
+    expect(server2.rects().get(recovered.id)![3]).toBeCloseTo(1, 6)
+  })
+
+  it("reinspects before each resize so an unrelated split inserted mid-equalization stays untouched", async () => {
+    const server = new FakeRexServer("session:mid-resize", "block:parent")
+    const ownedBlocks = new Set<string>()
+    const baseRun = server.exec()
+    const host = { parentId: "block:parent", sessionId: "session:mid-resize" }
+
+    await createRexTarget(host, "/tmp/w1.sh", { ownedBlocks, run: baseRun })
+    const w2 = await createRexTarget(host, "/tmp/w2.sh", { ownedBlocks, run: baseRun })
+    await createRexTarget(host, "/tmp/w3.sh", { ownedBlocks, run: baseRun })
+
+    let resizeCalls = 0
+    let unrelatedHeightAfterInsert = 0
+    const run: RexExec = async (args) => {
+      const result = await baseRun(args)
+      if (args[0] === "api" && args.includes("session.resize_pane")) {
+        resizeCalls += 1
+        if (resizeCalls === 1) {
+          server.split(w2.id, "below", 50, "block:unrelated-mid")
+          unrelatedHeightAfterInsert = server.rects().get("block:unrelated-mid")![3]
+        }
+      }
+      return result
+    }
+
+    await createRexTarget(host, "/tmp/w4.sh", { ownedBlocks, run })
+    expect(resizeCalls).toBe(1)
+    expect(server.rects().get("block:unrelated-mid")![3]).toBeCloseTo(unrelatedHeightAfterInsert, 6)
+  })
+
+  it("chooses the taller owned group when an unrelated pane splits the bottom worker", async () => {
+    const server = new FakeRexServer("session:taller-group", "block:parent")
+    const ownedBlocks = new Set<string>()
+    const run = server.exec()
+    const host = { parentId: "block:parent", sessionId: "session:taller-group" }
+
+    const w1 = await createRexTarget(host, "/tmp/w1.sh", { ownedBlocks, run })
+    const w2 = await createRexTarget(host, "/tmp/w2.sh", { ownedBlocks, run })
+    server.split(w2.id, "below", 50, "block:unrelated-bottom")
+    const unrelatedBefore = [...server.rects().get("block:unrelated-bottom")!]
+
+    const w3 = await createRexTarget(host, "/tmp/w3.sh", { ownedBlocks, run })
+    const rects = server.rects()
+
+    expect(rects.get("block:parent")![2]).toBeCloseTo(0.65, 6)
+    expect(rects.get("block:unrelated-bottom")).toEqual(unrelatedBefore)
+    for (const id of [w1.id, w2.id, w3.id]) {
+      expect(rects.get(id)![3]).toBeCloseTo(0.25, 5)
+    }
   })
 
   it("resolves session_id from block inspect when omitted and seeds knownChildren across restarts", async () => {
@@ -470,6 +605,7 @@ describe.skipIf(!hasRex)("rex integration", () => {
   let stateDir = ""
   let scriptPath = ""
   let env: NodeJS.ProcessEnv = {}
+  let serverStarted = false
 
   const runRex: RexExec = async (args) => (await exec("rex", args, { env })).stdout
 
@@ -499,12 +635,12 @@ describe.skipIf(!hasRex)("rex integration", () => {
 
   beforeAll(async () => {
     rexDir = await mkdtemp("/tmp/suba-rex-layout-")
+    env = { ...process.env, REX_RUNTIME_DIR: rexDir, REX_SERVER: "" }
     stateDir = join(rexDir, "state")
     const configPath = join(rexDir, "empty.lua")
     scriptPath = join(rexDir, "worker.sh")
     await writeFile(configPath, "")
     await writeFile(scriptPath, "#!/bin/sh\nsleep 120\n", { mode: 0o700 })
-    env = { ...process.env, REX_RUNTIME_DIR: rexDir, REX_SERVER: "" }
     await runRex([
       "server",
       "start",
@@ -516,11 +652,14 @@ describe.skipIf(!hasRex)("rex integration", () => {
       "--config",
       configPath,
     ])
+    serverStarted = true
   }, 30000)
 
   afterAll(async () => {
     if (!rexDir) return
-    await runRex(["server", "stop"]).catch(() => undefined)
+    if (serverStarted && env.REX_RUNTIME_DIR === rexDir) {
+      await runRex(["server", "stop"]).catch(() => undefined)
+    }
     await rm(rexDir, { recursive: true, force: true })
   })
 
