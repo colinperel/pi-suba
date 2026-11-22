@@ -65,7 +65,15 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
   if (markdown.startsWith("---\n")) {
     const end = markdown.indexOf("\n---", 4)
     if (end < 0) throw new Error("frontmatter is missing its closing delimiter")
-    const parsed = YAML.parse(markdown.slice(4, end))
+    const document = YAML.parseDocument(markdown.slice(4, end))
+    if (document.errors.length > 0) throw document.errors[0]
+    // YAML would turn non-string keys such as 01 into colliding strings.
+    const flagNodes = document.get("flags", true)
+    if (YAML.isMap(flagNodes))
+      for (const { key } of flagNodes.items)
+        if (!YAML.isScalar(key) || typeof key.value !== "string")
+          throw new Error(`flags has a non-string name: ${String(key)}`)
+    const parsed: unknown = document.toJS()
     if (parsed && (typeof parsed !== "object" || Array.isArray(parsed)))
       throw new Error("frontmatter must be a mapping")
     data = (parsed ?? {}) as Record<string, unknown>

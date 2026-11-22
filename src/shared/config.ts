@@ -90,7 +90,7 @@ export function parseChildFlags(value: unknown, label: string): ChildFlags {
   return Object.fromEntries(
     Object.entries(input).map(([name, flag]) => {
       // Pi splits --name=value at the first "=", so only such names are ambiguous.
-      if (!name || name.includes("=") || name.startsWith("-") || !representable(name))
+      if (name.includes("=") || !representable(name))
         throw new Error(`${label} has an invalid flag name: ${JSON.stringify(name)}`)
       if (typeof flag !== "boolean" && typeof flag !== "string")
         throw new Error(`${label}.${name} must be a string or boolean`)

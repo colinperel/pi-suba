@@ -23,6 +23,10 @@ describe("profiles", () => {
     expect(
       parseProfile('---\nflags:\n  service-tier: "off"\n  plan: false\n---\n', "x").flags,
     ).toEqual({ "service-tier": "off", plan: false }))
+  it("rejects flag names YAML would convert", () =>
+    expect(() => parseProfile('---\nflags: {"1": keep, 01: "off"}\n---\n', "x")).toThrow(
+      "non-string name",
+    ))
   it("uses filename fallback", () => expect(parseProfile("Prompt", "review").name).toBe("review"))
   it("rejects arbitrary tools and keys", () => {
     expect(() => parseProfile("---\ntools: read,write\n---\n", "x")).toThrow(

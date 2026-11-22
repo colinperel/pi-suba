@@ -38,13 +38,19 @@ describe("configuration", () => {
   })
   it("keeps every flag name as written", () =>
     expect(
-      Object.entries(parseConfig(JSON.parse('{"childFlags":{"__proto__":"sample"}}')).childFlags),
-    ).toEqual([["__proto__", "sample"]]))
+      Object.entries(
+        parseConfig(JSON.parse('{"childFlags":{"__proto__":"sample","-dash":"a","":"b"}}'))
+          .childFlags,
+      ),
+    ).toEqual([
+      ["__proto__", "sample"],
+      ["-dash", "a"],
+      ["", "b"],
+    ]))
   it("rejects unsupported keys and bounds", () => {
     expect(() => parseConfig({ surprise: true })).toThrow("unsupported key")
     expect(() => parseConfig({ activity: { pollMs: 10 } })).toThrow("between 100")
     expect(() => parseConfig({ childExtensions: ["same", "same"] })).toThrow("duplicates")
-    expect(() => parseConfig({ childFlags: { "--model": "x" } })).toThrow("invalid flag name")
     expect(() => parseConfig({ childFlags: { "a=b": "x" } })).toThrow("invalid flag name")
     expect(() => parseConfig({ childFlags: { "a\u0000b": "x" } })).toThrow("invalid flag name")
     expect(() => parseConfig({ childFlags: { tier: "a\u0000b" } })).toThrow("process argument")
