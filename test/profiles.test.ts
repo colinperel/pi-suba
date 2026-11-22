@@ -31,6 +31,28 @@ describe("profiles", () => {
       parseProfile('---\ndescription: &k flags\n*k : {"1": keep, 01: "off"}\n---\n', "x"),
     ).toThrow("non-string name")
   })
+  it("reads CRLF frontmatter and only whole-line closing delimiters", () => {
+    expect(parseProfile("---\r\nflags: {service-tier: off}\r\n---\r\nbody", "x")).toMatchObject({
+      flags: { "service-tier": "off" },
+      body: "body",
+    })
+    expect(parseProfile("---\n{flags: {a: b,\n---flag: c}}\n---\n", "x").flags).toEqual({
+      a: "b",
+      "---flag": "c",
+    })
+    expect(parseProfile("---\n---\nbody", "x").body).toBe("body")
+  })
+  it("rejects keys that resolve to duplicates", () => {
+    expect(() =>
+      parseProfile("---\ndescription: &k flags\n*k : [a]\nflags: {}\n---\n", "x"),
+    ).toThrow("duplicate key: flags")
+    expect(() =>
+      parseProfile(
+        "---\nname: &t service-tier\nflags: {*t : off, service-tier: priority}\n---\n",
+        "x",
+      ),
+    ).toThrow("duplicate name: service-tier")
+  })
   it("accepts aliased flag names and rejects non-mapping flags", () => {
     expect(
       parseProfile('---\nname: &tier service-tier\nflags: {*tier : "off"}\n---\n', "x").flags,

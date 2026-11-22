@@ -59,32 +59,59 @@ function scalarBoolean(value: unknown, key: string, fallback: boolean): boolean 
   return value
 }
 
-function stringKeyedMap(value: unknown): Record<string, unknown> {
-  if (!(value instanceof Map)) throw new Error("flags must be a mapping")
-  return Object.fromEntries(
-    [...value].map(([key, flag]) => {
-      if (typeof key !== "string") throw new Error(`flags has a non-string name: ${String(key)}`)
-      return [key, flag]
-    }),
-  )
+const FRONTMATTER_START = /^---\r?\n/
+// The closing delimiter is a whole line, so "---flag: x" inside the YAML is content.
+const FRONTMATTER = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/
+
+/**
+ * A YAML mapping's entries with keys resolved (aliases included) but still typed,
+ * so 01 cannot pass as "1" and two keys that resolve alike are a duplicate.
+ */
+function resolvedEntries(
+  node: unknown,
+  document: YAML.Document,
+  label: string,
+  kind: string,
+): [string, unknown][] {
+  const map = YAML.isAlias(node) ? node.resolve(document) : node
+  // A !!set is a map of nulls in the YAML library, not a mapping of values.
+  if (!YAML.isMap(map) || map.tag === "tag:yaml.org,2002:set")
+    throw new Error(`${label} must be a mapping`)
+  const seen = new Set<unknown>()
+  return map.items.map(({ key, value }) => {
+    const name: unknown = YAML.isNode(key) ? key.toJS(document) : key
+    if (typeof name !== "string")
+      throw new Error(`${label} has a non-string ${kind}: ${String(name)}`)
+    if (seen.has(name)) throw new Error(`${label} has a duplicate ${kind}: ${name}`)
+    seen.add(name)
+    return [name, value]
+  })
+}
+
+function nodeValue(node: unknown, document: YAML.Document): unknown {
+  return YAML.isNode(node) ? node.toJS(document) : node
 }
 
 export function parseProfile(markdown: string, fallbackName: string, source?: string): Profile {
   let data: Record<string, unknown> = {}
   let body = markdown
-  if (markdown.startsWith("---\n")) {
-    const end = markdown.indexOf("\n---", 4)
-    if (end < 0) throw new Error("frontmatter is missing its closing delimiter")
-    // Maps keep resolved keys typed, so 01 cannot collide with "1" as a string.
-    const parsed: unknown = YAML.parse(markdown.slice(4, end), { mapAsMap: true })
-    if (parsed && !(parsed instanceof Map)) throw new Error("frontmatter must be a mapping")
-    data = Object.fromEntries(
-      [...((parsed as Map<unknown, unknown> | null) ?? [])].map(([key, value]) => {
-        if (typeof key !== "string") throw new Error(`unsupported profile key: ${String(key)}`)
-        return [key, value]
-      }),
-    )
-    body = markdown.slice(end + 4).replace(/^(?:\r?\n)+/, "")
+  let flagsNode: unknown
+  let document: YAML.Document | undefined
+  if (FRONTMATTER_START.test(markdown)) {
+    const match = FRONTMATTER.exec(markdown)
+    if (!match) throw new Error("frontmatter is missing its closing delimiter")
+    document = YAML.parseDocument(match[1] ?? "")
+    if (document.errors.length > 0) throw document.errors[0]
+    if (document.contents !== null) {
+      const parsed = document
+      data = Object.fromEntries(
+        resolvedEntries(parsed.contents, parsed, "frontmatter", "key").map(([key, value]) => {
+          if (key === "flags") flagsNode = value
+          return [key, key === "flags" ? undefined : nodeValue(value, parsed)]
+        }),
+      )
+    }
+    body = markdown.slice(match[0].length).replace(/^(?:\r?\n)+/, "")
   }
   for (const key of Object.keys(data))
     if (!KEYS.has(key)) throw new Error(`unsupported profile key: ${key}`)
@@ -118,7 +145,18 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
     loadSkills: scalarBoolean(data["load-skills"], "load-skills", true),
     systemPrompt,
     autoComplete: autoCompleteValue as boolean | undefined,
-    flags: data.flags === undefined ? {} : parseChildFlags(stringKeyedMap(data.flags), "flags"),
+    flags:
+      flagsNode === undefined || !document
+        ? {}
+        : parseChildFlags(
+            Object.fromEntries(
+              resolvedEntries(flagsNode, document, "flags", "name").map(([name, value]) => [
+                name,
+                nodeValue(value, document!),
+              ]),
+            ),
+            "flags",
+          ),
     body,
     source,
   }
