@@ -59,24 +59,31 @@ function scalarBoolean(value: unknown, key: string, fallback: boolean): boolean 
   return value
 }
 
+function stringKeyedMap(value: unknown): Record<string, unknown> {
+  if (!(value instanceof Map)) throw new Error("flags must be a mapping")
+  return Object.fromEntries(
+    [...value].map(([key, flag]) => {
+      if (typeof key !== "string") throw new Error(`flags has a non-string name: ${String(key)}`)
+      return [key, flag]
+    }),
+  )
+}
+
 export function parseProfile(markdown: string, fallbackName: string, source?: string): Profile {
   let data: Record<string, unknown> = {}
   let body = markdown
   if (markdown.startsWith("---\n")) {
     const end = markdown.indexOf("\n---", 4)
     if (end < 0) throw new Error("frontmatter is missing its closing delimiter")
-    const document = YAML.parseDocument(markdown.slice(4, end))
-    if (document.errors.length > 0) throw document.errors[0]
-    // YAML would turn non-string keys such as 01 into colliding strings.
-    const flagNodes = document.get("flags", true)
-    if (YAML.isMap(flagNodes))
-      for (const { key } of flagNodes.items)
-        if (!YAML.isScalar(key) || typeof key.value !== "string")
-          throw new Error(`flags has a non-string name: ${String(key)}`)
-    const parsed: unknown = document.toJS()
-    if (parsed && (typeof parsed !== "object" || Array.isArray(parsed)))
-      throw new Error("frontmatter must be a mapping")
-    data = (parsed ?? {}) as Record<string, unknown>
+    // Maps keep resolved keys typed, so 01 cannot collide with "1" as a string.
+    const parsed: unknown = YAML.parse(markdown.slice(4, end), { mapAsMap: true })
+    if (parsed && !(parsed instanceof Map)) throw new Error("frontmatter must be a mapping")
+    data = Object.fromEntries(
+      [...((parsed as Map<unknown, unknown> | null) ?? [])].map(([key, value]) => {
+        if (typeof key !== "string") throw new Error(`unsupported profile key: ${String(key)}`)
+        return [key, value]
+      }),
+    )
     body = markdown.slice(end + 4).replace(/^(?:\r?\n)+/, "")
   }
   for (const key of Object.keys(data))
@@ -111,7 +118,7 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
     loadSkills: scalarBoolean(data["load-skills"], "load-skills", true),
     systemPrompt,
     autoComplete: autoCompleteValue as boolean | undefined,
-    flags: data.flags === undefined ? {} : parseChildFlags(data.flags, "flags"),
+    flags: data.flags === undefined ? {} : parseChildFlags(stringKeyedMap(data.flags), "flags"),
     body,
     source,
   }

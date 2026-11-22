@@ -23,10 +23,23 @@ describe("profiles", () => {
     expect(
       parseProfile('---\nflags:\n  service-tier: "off"\n  plan: false\n---\n', "x").flags,
     ).toEqual({ "service-tier": "off", plan: false }))
-  it("rejects flag names YAML would convert", () =>
+  it("rejects flag names YAML would convert", () => {
     expect(() => parseProfile('---\nflags: {"1": keep, 01: "off"}\n---\n', "x")).toThrow(
       "non-string name",
-    ))
+    )
+    expect(() =>
+      parseProfile('---\ndescription: &k flags\n*k : {"1": keep, 01: "off"}\n---\n', "x"),
+    ).toThrow("non-string name")
+  })
+  it("accepts aliased flag names and rejects non-mapping flags", () => {
+    expect(
+      parseProfile('---\nname: &tier service-tier\nflags: {*tier : "off"}\n---\n', "x").flags,
+    ).toEqual({ "service-tier": "off" })
+    for (const flags of ["!!set {a}", "[a]", "x"])
+      expect(() => parseProfile(`---\nflags: ${flags}\n---\n`, "x")).toThrow(
+        "flags must be a mapping",
+      )
+  })
   it("uses filename fallback", () => expect(parseProfile("Prompt", "review").name).toBe("review"))
   it("rejects arbitrary tools and keys", () => {
     expect(() => parseProfile("---\ntools: read,write\n---\n", "x")).toThrow(
