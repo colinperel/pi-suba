@@ -10,9 +10,11 @@ describe("configuration", () => {
         thinking: "high",
         childExtensions: ["../../code/pi-cc-tools-local"],
         childTools: ["process"],
+        childFlags: { "service-tier": " fast ", plan: true },
         activity: { pollMs: 200, maxRows: 3 },
       }),
     ).toMatchObject({
+      childFlags: { "service-tier": "fast", plan: true },
       defaultProfile: "explore",
       thinking: "high",
       childExtensions: ["../../code/pi-cc-tools-local"],
@@ -38,6 +40,8 @@ describe("configuration", () => {
     expect(() => parseConfig({ surprise: true })).toThrow("unsupported key")
     expect(() => parseConfig({ activity: { pollMs: 10 } })).toThrow("between 100")
     expect(() => parseConfig({ childExtensions: ["same", "same"] })).toThrow("duplicates")
+    expect(() => parseConfig({ childFlags: { "--model": "x" } })).toThrow("invalid flag name")
+    expect(() => parseConfig({ childFlags: { tier: 1 } })).toThrow("non-empty string")
     expect(() => parseConfig({ childTools: ["read,process"] })).toThrow("single tool name")
   })
 })

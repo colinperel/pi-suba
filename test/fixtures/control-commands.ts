@@ -30,7 +30,16 @@ export default function (pi: ExtensionAPI) {
     pi.registerProvider(faux.provider)
     pi.on("before_agent_start", () => delay(500))
   }
+  pi.registerFlag("suba-test-value", { description: "Recorded test flag", type: "string" })
+  pi.registerFlag("suba-test-switch", { description: "Recorded test switch", type: "boolean" })
   pi.on("session_start", async () => {
+    await writeFile(
+      join(artifactDir, "flags.json"),
+      JSON.stringify({
+        value: pi.getFlag("suba-test-value") ?? null,
+        switch: pi.getFlag("suba-test-switch") ?? null,
+      }),
+    )
     if (process.env.SUBA_TEST_HOOK_ERROR === "1")
       throw new Error("Synthetic recoverable hook failure")
     if (faux) await pi.setModel(faux.getModel())

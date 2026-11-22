@@ -4,6 +4,9 @@ import { isAbsolute, join, resolve } from "node:path"
 import { agentDirectory, subaDirectory } from "./paths.ts"
 import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
 
+/** Extension CLI flags for children: string values, or booleans (true passes, false omits). */
+export type ChildFlags = Record<string, string | boolean>
+
 export interface SubaConfig {
   defaultProfile: string
   model?: string
@@ -11,6 +14,7 @@ export interface SubaConfig {
   autoComplete: boolean
   childExtensions: string[]
   childTools: string[]
+  childFlags: ChildFlags
   activity: { pollMs: number; maxRows: number }
 }
 
@@ -19,6 +23,7 @@ export const DEFAULT_CONFIG: SubaConfig = {
   autoComplete: true,
   childExtensions: [],
   childTools: [],
+  childFlags: {},
   activity: { pollMs: 500, maxRows: 8 },
 }
 
@@ -29,6 +34,7 @@ const ROOT_KEYS = new Set([
   "autoComplete",
   "childExtensions",
   "childTools",
+  "childFlags",
   "activity",
   // Obsolete layout keys are accepted but never read or returned.
   "placement",
@@ -72,6 +78,24 @@ function toolNames(value: unknown, label: string): string[] {
   return result
 }
 
+export function parseChildFlags(value: unknown, label: string): ChildFlags {
+  const input = object(value, label)
+  const result: ChildFlags = {}
+  for (const [name, flag] of Object.entries(input)) {
+    if (!/^[a-z][a-z0-9-]*$/.test(name))
+      throw new Error(`${label} has an invalid flag name: ${name}`)
+    result[name] = typeof flag === "boolean" ? flag : string(flag, `${label}.${name}`).trim()
+  }
+  return result
+}
+
+/** Pi CLI arguments for child flags; `--name=value` keeps values from taking the next argument. */
+export function childFlagArgs(flags: ChildFlags): string[] {
+  return Object.entries(flags).flatMap(([name, value]) =>
+    value === false ? [] : [`--${name}=${value === true ? "true" : value}`],
+  )
+}
+
 export function resolveChildExtensionSource(source: string, agentDir = agentDirectory()): string {
   if (source === "~") return homedir()
   if (source.startsWith("~/")) return resolve(homedir(), source.slice(2))
@@ -111,6 +135,8 @@ export function parseConfig(value: unknown): SubaConfig {
       input.childTools === undefined
         ? [...DEFAULT_CONFIG.childTools]
         : toolNames(input.childTools, "childTools"),
+    childFlags:
+      input.childFlags === undefined ? {} : parseChildFlags(input.childFlags, "childFlags"),
     activity: {
       pollMs:
         activityInput.pollMs === undefined

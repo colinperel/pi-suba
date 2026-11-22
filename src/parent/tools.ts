@@ -9,7 +9,7 @@ import { StringEnum } from "@earendil-works/pi-ai"
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { resolveChildExtensionSource, type SubaConfig } from "../shared/config.ts"
+import { childFlagArgs, resolveChildExtensionSource, type SubaConfig } from "../shared/config.ts"
 import type { Profile } from "../shared/profiles.ts"
 import { TOOL_POLICIES } from "../shared/profiles.ts"
 import { readActivity, THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
@@ -156,6 +156,7 @@ function resolveLaunch(
     autoComplete: overrides.autoComplete ?? profile.autoComplete ?? config.autoComplete,
     model: overrides.model ?? profile.model ?? config.model,
     thinking: overrides.thinking ?? profile.thinking ?? config.thinking,
+    flags: { ...config.childFlags, ...profile.flags },
   }
 }
 function uniqueId(records: Map<string, ChildRecord>): string {
@@ -347,6 +348,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     if (!resolvedLaunch.loadSkills) args.push("--no-skills")
     if (resolvedLaunch.model) args.push("--model", resolvedLaunch.model)
     if (resolvedLaunch.thinking) args.push("--thinking", resolvedLaunch.thinking)
+    args.push(...childFlagArgs(resolvedLaunch.flags ?? {}))
     if (resolvedLaunch.systemPrompt === "replace")
       args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
     else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)

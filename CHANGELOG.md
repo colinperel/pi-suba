@@ -6,6 +6,7 @@ description: Release notes for pi-suba.
 ## Unreleased
 
 - Allow configured extension tools in children with the additive `childTools` setting.
+- Pass extension flags to children with the `childFlags` setting and per-profile `flags` overrides.
 - Launch visible children in tmux or Rex, with background RPC children everywhere else.
 - Send guidance and orderly shutdown through per-launch inboxes instead of simulated typing.
 - Track child processes independently of terminal panes, preserving artifacts and worktrees when a native launch cannot be confirmed.

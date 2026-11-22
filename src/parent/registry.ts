@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
 import { isAbsolute, join, relative, sep } from "node:path"
+import type { ChildFlags } from "../shared/config.ts"
 import { subaDirectory } from "../shared/paths.ts"
 import type { CompletionReport, ChildActivity, ThinkingLevel } from "../shared/protocol.ts"
 import type { AllowedToolPolicy } from "../shared/profiles.ts"
@@ -22,6 +23,8 @@ export interface ResolvedLaunch {
   autoComplete: boolean
   model?: string
   thinking?: ThinkingLevel
+  /** Missing in records written before child flags existed. */
+  flags?: ChildFlags
 }
 export interface ChildRecord {
   id: string

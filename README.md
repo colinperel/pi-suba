@@ -300,6 +300,7 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
   "autoComplete": true,
   "childExtensions": ["npm:some-pi-package"],
   "childTools": ["some_tool"],
+  "childFlags": { "some-extension-flag": "value" },
   "activity": {
     "pollMs": 500,
     "maxRows": 8
@@ -315,6 +316,7 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
 | `autoComplete`          | `true`                | Finish a child when its agent settles       |
 | `childExtensions`       | `[]`                  | Additional extensions loaded in every child |
 | `childTools`            | `[]`                  | Additional tools enabled in every child     |
+| `childFlags`            | `{}`                  | Extension flags passed to every child       |
 | `activity.pollMs`       | `500`                 | Parent watcher interval in milliseconds     |
 | `activity.maxRows`      | `8`                   | Maximum rows in the activity widget         |
 
@@ -334,6 +336,11 @@ Children also start with an explicit tool allowlist: the profile's tool policy p
 Pi hides any other tool, including tools registered by `childExtensions`. List those tool names in
 `childTools` to enable them in every child, for example `"childTools": ["process"]` alongside the
 extension that registers `process`.
+
+`childFlags` passes CLI flags registered by child extensions (`pi.registerFlag`). A string value
+becomes `--name=value`; `true` passes a boolean flag and `false` omits it. A profile's `flags` map
+overrides individual entries, so a profile can change or omit a flag set for every child. A child
+fails to start with "Unknown option" when no loaded child extension registers a flag.
 
 Configuration and profiles are read when the parent session starts.
 
@@ -426,6 +433,7 @@ Supported fields:
 | `load-skills`   | `true`         | Load Pi skills                       |
 | `system-prompt` | `append`       | Append or replace Pi's system prompt |
 | `auto-complete` | Global setting | Profile completion behavior          |
+| `flags`         | `childFlags`   | Extension flag overrides             |
 
 Two tool policies are available:
 

@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises"
 import { basename, join } from "node:path"
+import { type ChildFlags, parseChildFlags } from "./config.ts"
 import { subaDirectory } from "./paths.ts"
 import YAML from "yaml"
 import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
@@ -15,6 +16,7 @@ export interface Profile {
   loadSkills: boolean
   systemPrompt: "append" | "replace"
   autoComplete?: boolean
+  flags: ChildFlags
   body: string
   source?: string
 }
@@ -25,6 +27,7 @@ export const BUILTIN_DEFAULT_PROFILE: Profile = {
   loadContext: true,
   loadSkills: true,
   systemPrompt: "append",
+  flags: {},
   body: "",
 }
 export const TOOL_POLICIES: Record<AllowedToolPolicy, string[]> = {
@@ -41,6 +44,7 @@ const KEYS = new Set([
   "load-skills",
   "system-prompt",
   "auto-complete",
+  "flags",
 ])
 
 function scalarString(value: unknown, key: string): string | undefined {
@@ -99,6 +103,7 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
     loadSkills: scalarBoolean(data["load-skills"], "load-skills", true),
     systemPrompt,
     autoComplete: autoCompleteValue as boolean | undefined,
+    flags: data.flags === undefined ? {} : parseChildFlags(data.flags, "flags"),
     body,
     source,
   }

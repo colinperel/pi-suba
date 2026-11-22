@@ -19,6 +19,10 @@ describe("profiles", () => {
     })
     expect(TOOL_POLICIES[profile.tools]).toEqual(["read", "bash"])
   })
+  it("parses child flags", () =>
+    expect(
+      parseProfile('---\nflags:\n  service-tier: "off"\n  plan: false\n---\n', "x").flags,
+    ).toEqual({ "service-tier": "off", plan: false }))
   it("uses filename fallback", () => expect(parseProfile("Prompt", "review").name).toBe("review"))
   it("rejects arbitrary tools and keys", () => {
     expect(() => parseProfile("---\ntools: read,write\n---\n", "x")).toThrow(

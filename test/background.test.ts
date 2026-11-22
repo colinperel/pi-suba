@@ -127,6 +127,23 @@ it("restores a background child stopped by parent teardown as interrupted, never
   expect(app.notifications[0]).not.toContain("completed")
 }, 20000)
 
+it("passes configured flags to child extensions, with profile values first", async () => {
+  const app = await runtime()
+  app.host.config = {
+    ...app.host.config,
+    childFlags: { "suba-test-value": "config", "suba-test-switch": true },
+  }
+  const profile = app.host.profiles.get("default")!
+  app.host.profiles.set("default", { ...profile, flags: { "suba-test-value": "profile value" } })
+  const child = await app.launch("/suba-test-wait")
+  await app.waitForState(child, "awaiting-parent")
+  expect(JSON.parse(await readFile(join(child.artifactDir, "flags.json"), "utf8"))).toEqual({
+    value: "profile value",
+    switch: true,
+  })
+  await app.execute("suba_finish", { id: child.id, result: "Verified child flags" })
+}, 20000)
+
 it("restores an interrupted child after the parent process actually exits", async () => {
   const app = await runtime()
   const suba = join(app.root, "suba")
