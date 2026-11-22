@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { type ChildFlags, parseChildFlags } from "./config.ts"
 import { subaDirectory } from "./paths.ts"
-import YAML from "yaml"
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
 
 export type AllowedToolPolicy = "default" | "read-only"
@@ -59,60 +59,24 @@ function scalarBoolean(value: unknown, key: string, fallback: boolean): boolean 
   return value
 }
 
-const FRONTMATTER_START = /^---\r?\n/
-// The closing delimiter is a whole line, so "---flag: x" inside the YAML is content.
-const FRONTMATTER = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/
-
-/**
- * A YAML mapping's entries with keys resolved (aliases included) but still typed,
- * so 01 cannot pass as "1" and two keys that resolve alike are a duplicate.
- */
-function resolvedEntries(
-  node: unknown,
-  document: YAML.Document,
-  label: string,
-  kind: string,
-): [string, unknown][] {
-  const map = YAML.isAlias(node) ? node.resolve(document) : node
-  // A !!set is a map of nulls in the YAML library, not a mapping of values.
-  if (!YAML.isMap(map) || map.tag === "tag:yaml.org,2002:set")
-    throw new Error(`${label} must be a mapping`)
-  const seen = new Set<unknown>()
-  return map.items.map(({ key, value }) => {
-    const name: unknown = YAML.isNode(key) ? key.toJS(document) : key
-    if (typeof name !== "string")
-      throw new Error(`${label} has a non-string ${kind}: ${String(name)}`)
-    if (seen.has(name)) throw new Error(`${label} has a duplicate ${kind}: ${name}`)
-    seen.add(name)
-    return [name, value]
-  })
+/** A plain YAML mapping; sequences and tagged collections such as !!set are not. */
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype
+  )
 }
 
-function nodeValue(node: unknown, document: YAML.Document): unknown {
-  return YAML.isNode(node) ? node.toJS(document) : node
+function profileFlags(value: unknown): ChildFlags {
+  if (value === undefined) return {}
+  if (!isMapping(value)) throw new Error("flags must be a mapping")
+  return parseChildFlags(value, "flags")
 }
 
 export function parseProfile(markdown: string, fallbackName: string, source?: string): Profile {
-  let data: Record<string, unknown> = {}
-  let body = markdown
-  let flagsNode: unknown
-  let document: YAML.Document | undefined
-  if (FRONTMATTER_START.test(markdown)) {
-    const match = FRONTMATTER.exec(markdown)
-    if (!match) throw new Error("frontmatter is missing its closing delimiter")
-    document = YAML.parseDocument(match[1] ?? "")
-    if (document.errors.length > 0) throw document.errors[0]
-    if (document.contents !== null) {
-      const parsed = document
-      data = Object.fromEntries(
-        resolvedEntries(parsed.contents, parsed, "frontmatter", "key").map(([key, value]) => {
-          if (key === "flags") flagsNode = value
-          return [key, key === "flags" ? undefined : nodeValue(value, parsed)]
-        }),
-      )
-    }
-    body = markdown.slice(match[0].length).replace(/^(?:\r?\n)+/, "")
-  }
+  // Pi's own front-matter parser, as for skills and prompt templates.
+  const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(markdown)
+  if (!isMapping(frontmatter)) throw new Error("frontmatter must be a mapping")
+  const data = frontmatter
   for (const key of Object.keys(data))
     if (!KEYS.has(key)) throw new Error(`unsupported profile key: ${key}`)
   const rawTools = scalarString(data.tools, "tools") ?? "default"
@@ -145,18 +109,7 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
     loadSkills: scalarBoolean(data["load-skills"], "load-skills", true),
     systemPrompt,
     autoComplete: autoCompleteValue as boolean | undefined,
-    flags:
-      flagsNode === undefined || !document
-        ? {}
-        : parseChildFlags(
-            Object.fromEntries(
-              resolvedEntries(flagsNode, document, "flags", "name").map(([name, value]) => [
-                name,
-                nodeValue(value, document!),
-              ]),
-            ),
-            "flags",
-          ),
+    flags: profileFlags(data.flags),
     body,
     source,
   }

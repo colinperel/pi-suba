@@ -344,7 +344,8 @@ values pass through unchanged. A child fails to start with "Unknown option" when
 extension registers a flag. `suba_resume` reuses the flags saved at launch, so a configuration or
 profile change, including a fixed flag name, applies only to children launched afterward. Names
 and values a process argument cannot carry exactly (a NUL character or an unpaired surrogate) are
-rejected, as are names that contain `=` and, in profiles, YAML keys that are not strings.
+rejected, as are names that contain `=`. Profile front matter is read with Pi's own parser, as for
+skills, so YAML converts keys such as `01` to strings before validation.
 
 Configuration and profiles are read when the parent session starts.
 

@@ -34,9 +34,6 @@
       "./pi-suba.ts"
     ]
   },
-  "dependencies": {
-    "yaml": "^2.8.1"
-  },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",

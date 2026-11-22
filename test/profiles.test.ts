@@ -15,7 +15,7 @@ describe("profiles", () => {
       systemPrompt: "replace",
       autoComplete: false,
       thinking: "low",
-      body: "Explore.\n",
+      body: "Explore.",
     })
     expect(TOOL_POLICIES[profile.tools]).toEqual(["read", "bash"])
   })
@@ -23,40 +23,12 @@ describe("profiles", () => {
     expect(
       parseProfile('---\nflags:\n  service-tier: "off"\n  plan: false\n---\n', "x").flags,
     ).toEqual({ "service-tier": "off", plan: false }))
-  it("rejects flag names YAML would convert", () => {
-    expect(() => parseProfile('---\nflags: {"1": keep, 01: "off"}\n---\n', "x")).toThrow(
-      "non-string name",
-    )
-    expect(() =>
-      parseProfile('---\ndescription: &k flags\n*k : {"1": keep, 01: "off"}\n---\n', "x"),
-    ).toThrow("non-string name")
-  })
-  it("reads CRLF frontmatter and only whole-line closing delimiters", () => {
+  it("reads frontmatter with Pi's parser, including CRLF", () =>
     expect(parseProfile("---\r\nflags: {service-tier: off}\r\n---\r\nbody", "x")).toMatchObject({
       flags: { "service-tier": "off" },
       body: "body",
-    })
-    expect(parseProfile("---\n{flags: {a: b,\n---flag: c}}\n---\n", "x").flags).toEqual({
-      a: "b",
-      "---flag": "c",
-    })
-    expect(parseProfile("---\n---\nbody", "x").body).toBe("body")
-  })
-  it("rejects keys that resolve to duplicates", () => {
-    expect(() =>
-      parseProfile("---\ndescription: &k flags\n*k : [a]\nflags: {}\n---\n", "x"),
-    ).toThrow("duplicate key: flags")
-    expect(() =>
-      parseProfile(
-        "---\nname: &t service-tier\nflags: {*t : off, service-tier: priority}\n---\n",
-        "x",
-      ),
-    ).toThrow("duplicate name: service-tier")
-  })
-  it("accepts aliased flag names and rejects non-mapping flags", () => {
-    expect(
-      parseProfile('---\nname: &tier service-tier\nflags: {*tier : "off"}\n---\n', "x").flags,
-    ).toEqual({ "service-tier": "off" })
+    }))
+  it("rejects non-mapping flags", () => {
     for (const flags of ["!!set {a}", "[a]", "x"])
       expect(() => parseProfile(`---\nflags: ${flags}\n---\n`, "x")).toThrow(
         "flags must be a mapping",
