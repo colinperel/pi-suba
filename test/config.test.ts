@@ -36,12 +36,19 @@ describe("configuration", () => {
     ).toBe("/Users/example/code/pi-cc-tools-local")
     expect(resolveChildExtensionSource("npm:example")).toBe("npm:example")
   })
+  it("keeps every flag name as written", () =>
+    expect(
+      Object.entries(parseConfig(JSON.parse('{"childFlags":{"__proto__":"sample"}}')).childFlags),
+    ).toEqual([["__proto__", "sample"]]))
   it("rejects unsupported keys and bounds", () => {
     expect(() => parseConfig({ surprise: true })).toThrow("unsupported key")
     expect(() => parseConfig({ activity: { pollMs: 10 } })).toThrow("between 100")
     expect(() => parseConfig({ childExtensions: ["same", "same"] })).toThrow("duplicates")
     expect(() => parseConfig({ childFlags: { "--model": "x" } })).toThrow("invalid flag name")
     expect(() => parseConfig({ childFlags: { "a=b": "x" } })).toThrow("invalid flag name")
+    expect(() => parseConfig({ childFlags: { "a\u0000b": "x" } })).toThrow("invalid flag name")
+    expect(() => parseConfig({ childFlags: { tier: "a\u0000b" } })).toThrow("process argument")
+    expect(() => parseConfig({ childFlags: { tier: "a\ud800b" } })).toThrow("process argument")
     expect(() => parseConfig({ childFlags: { tier: 1 } })).toThrow("string or boolean")
     expect(() => parseConfig({ childTools: ["read,process"] })).toThrow("single tool name")
   })

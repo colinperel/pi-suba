@@ -353,7 +353,8 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       args.push("--system-prompt", promptFile, "--append-system-prompt", controlFile)
     else args.push("--append-system-prompt", promptFile, "--append-system-prompt", controlFile)
     if (terminal.kind === "background") args.unshift("--mode", "rpc")
-    else args.push(params.task)
+    // "--" keeps a task that starts with "--" from being parsed as an option.
+    else args.push("--", params.task)
     const runId = randomBytes(8).toString("hex")
     const scriptPath = launchScriptPath(artifactDir, runId)
     await writeFile(

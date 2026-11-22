@@ -342,7 +342,9 @@ becomes `--name=value`; `true` passes a boolean flag and `false` omits it. A pro
 overrides individual entries, so a profile can change or omit a flag set for every child. String
 values pass through unchanged. A child fails to start with "Unknown option" when no loaded child
 extension registers a flag. `suba_resume` reuses the flags saved at launch, so a configuration or
-profile change, including a fixed flag name, applies only to children launched afterward.
+profile change, including a fixed flag name, applies only to children launched afterward. Names
+and values a process argument cannot carry exactly (a NUL character or an unpaired surrogate) are
+rejected, as are names that are empty, contain `=`, or start with `-`.
 
 Configuration and profiles are read when the parent session starts.
 

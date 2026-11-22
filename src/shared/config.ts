@@ -78,18 +78,27 @@ function toolNames(value: unknown, label: string): string[] {
   return result
 }
 
+/** Whether a process argument carries `text` unchanged: no NUL, no lone surrogate. */
+function representable(text: string): boolean {
+  // With the u flag, \p{Cs} matches only unpaired surrogates.
+  return !text.includes("\0") && !/\p{Cs}/u.test(text)
+}
+
 export function parseChildFlags(value: unknown, label: string): ChildFlags {
   const input = object(value, label)
-  const result: ChildFlags = {}
-  for (const [name, flag] of Object.entries(input)) {
-    // Pi splits --name=value at the first "=", so only such names are ambiguous.
-    if (!name || name.includes("=") || name.startsWith("-"))
-      throw new Error(`${label} has an invalid flag name: ${name}`)
-    if (typeof flag !== "boolean" && typeof flag !== "string")
-      throw new Error(`${label}.${name} must be a string or boolean`)
-    result[name] = flag
-  }
-  return result
+  // fromEntries defines own properties, so names such as __proto__ survive.
+  return Object.fromEntries(
+    Object.entries(input).map(([name, flag]) => {
+      // Pi splits --name=value at the first "=", so only such names are ambiguous.
+      if (!name || name.includes("=") || name.startsWith("-") || !representable(name))
+        throw new Error(`${label} has an invalid flag name: ${JSON.stringify(name)}`)
+      if (typeof flag !== "boolean" && typeof flag !== "string")
+        throw new Error(`${label}.${name} must be a string or boolean`)
+      if (typeof flag === "string" && !representable(flag))
+        throw new Error(`${label}.${name} cannot be passed as a process argument`)
+      return [name, flag]
+    }),
+  )
 }
 
 /** Pi CLI arguments for child flags; `--name=value` keeps values from taking the next argument. */

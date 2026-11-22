@@ -158,6 +158,41 @@ it("passes configured flags to child extensions, with profile values first", asy
   await app.execute("suba_finish", { id: child.id, result: "Verified child flags" })
 }, 20000)
 
+it("passes a visible child's task after its flags as a message, even when it looks like one", async () => {
+  const app = await runtime()
+  const server = `pi-suba-flags-${process.pid}`
+  const tmux = (...args: string[]) =>
+    promisify(execFile)("tmux", ["-L", server, ...args]).then(({ stdout }) => stdout.trim())
+  try {
+    await tmux("-V")
+  } catch {
+    return
+  }
+  const pane = await tmux("new-session", "-d", "-P", "-F", "#{pane_id}")
+  cleanups.push(() =>
+    tmux("kill-server").then(
+      () => undefined,
+      () => undefined,
+    ),
+  )
+  const socket = await tmux("display-message", "-p", "#{socket_path}")
+  vi.stubEnv("TMUX", `${socket},0,0`)
+  vi.stubEnv("TMUX_PANE", pane)
+  vi.stubEnv("SUBA_PI_EXECUTABLE", resolve("test/fixtures/fake-pi"))
+  app.host.config = { ...app.host.config, childFlags: { "service-tier": "off" } }
+  await app.execute("suba", { name: "visible", task: "--service-tier=fast" })
+  const child = [...app.host.records.values()].at(-1)!
+  const launch = await vi.waitFor(
+    async () =>
+      JSON.parse(await readFile(join(child.artifactDir, "launch-arguments.json"), "utf8")) as {
+        args: string[]
+      },
+    { timeout: 10000 },
+  )
+  expect(launch.args).toContain("--service-tier=off")
+  expect(launch.args.slice(-2)).toEqual(["--", "--service-tier=fast"])
+}, 20000)
+
 it("restores an interrupted child after the parent process actually exits", async () => {
   const app = await runtime()
   const suba = join(app.root, "suba")
