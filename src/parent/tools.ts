@@ -374,9 +374,29 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       { encoding: "utf8", mode: 0o700 },
     )
     await chmod(scriptPath, 0o700)
+    const ownedTargetIds =
+      terminal.kind === "rex"
+        ? [...host.records.values()].flatMap((record) =>
+            isLive(record) &&
+            record.target?.kind === "rex" &&
+            record.target.parentId === terminal.parentId &&
+            (!record.target.sessionId ||
+              !terminal.sessionId ||
+              record.target.sessionId === terminal.sessionId)
+              ? [record.target.id]
+              : [],
+          )
+        : undefined
     let target
     try {
-      target = await openTerminal(terminal, scriptPath, artifactDir, params.task, runId)
+      target = await openTerminal(
+        terminal,
+        scriptPath,
+        artifactDir,
+        params.task,
+        runId,
+        ownedTargetIds,
+      )
     } catch (error) {
       if (error instanceof UncertainTerminalLaunchError) throw error
       throw new Error(

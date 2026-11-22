@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { rpcFailurePath, shellQuote } from "./control.ts"
 import { atomicWriteJson } from "./protocol.ts"
+import { createRexTarget, UncertainRexLaunchError } from "./rex.ts"
 import { createTarget, PartialTmuxTargetError, tmuxExec } from "./tmux.ts"
 export { paneExists as legacyPaneExists } from "./tmux.ts"
 
@@ -17,7 +18,7 @@ export type TerminalHost =
 
 export type TerminalTarget =
   | { kind: "tmux"; id: string }
-  | { kind: "rex"; id: string; sessionId?: string }
+  | { kind: "rex"; id: string; sessionId?: string; parentId?: string }
   | { kind: "background"; id: string }
 
 export function selectTerminal(env: NodeJS.ProcessEnv = process.env): TerminalHost {
@@ -48,15 +49,13 @@ export async function checkTerminal(host: TerminalHost): Promise<void> {
 
 export class UncertainTerminalLaunchError extends Error {}
 
-const rexScope = (target: { sessionId?: string }): string[] =>
-  target.sessionId ? ["-s", target.sessionId] : []
-
 export async function openTerminal(
   host: TerminalHost,
   scriptPath: string,
   artifactDir: string,
   task: string,
   runId: string,
+  ownedTargetIds?: Iterable<string>,
 ): Promise<TerminalTarget> {
   switch (host.kind) {
     case "tmux": {
@@ -71,26 +70,16 @@ export async function openTerminal(
     }
     case "rex": {
       try {
-        const { stdout } = await exec("rex", [
-          "split",
-          ...rexScope(host),
-          "-b",
-          host.parentId,
-          "--split=right",
-          "--focus=false",
-          "--json",
-          "--",
-          scriptPath,
-        ])
-        const result = JSON.parse(stdout) as { block_ids?: unknown[] }
-        const id = result.block_ids?.[0]
-        if (typeof id !== "string" || !id) throw new Error("Rex split returned no block ID")
-        return { kind: "rex", id, sessionId: host.sessionId }
+        const target = await createRexTarget(host, scriptPath, { knownChildren: ownedTargetIds })
+        return { kind: "rex", id: target.id, sessionId: target.sessionId, parentId: host.parentId }
       } catch (error) {
-        throw new UncertainTerminalLaunchError(
-          `Rex launch could not be confirmed: ${error instanceof Error ? error.message : String(error)}. Artifacts were preserved; inspect the session before retrying.`,
-          { cause: error },
-        )
+        if (error instanceof UncertainRexLaunchError) {
+          throw new UncertainTerminalLaunchError(
+            `Rex launch could not be confirmed: ${error.message}. Artifacts were preserved; inspect the session before retrying.`,
+            { cause: error },
+          )
+        }
+        throw error
       }
     }
     case "background": {

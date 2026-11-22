@@ -461,9 +461,10 @@ retains its existing stacking and equal-height behavior. Selection prefers `TMUX
 
 - **tmux:** the first child opens beside the current parent; additional children stack
   below it with equal heights. Only panes owned by that parent are grouped.
-- **Rex:** children split to the right of the current parent block without taking focus.
-  Commands use Rex's default login-shell environment so GUI-started servers can find
-  the user's tools.
+- **Rex:** the first child opens to the right of the parent block, leaving the parent
+  with 65% of its original width without taking focus; additional children owned by that
+  parent stack vertically in that right column at equal heights. Commands use Rex's
+  default login-shell environment so GUI-started servers can find the user's tools.
 - **Background:** Pi runs in RPC mode, with diagnostics/events in `process.log`. Use the
   parent tools for guidance and results; no separate child TUI is created. Background
   children stop when the parent session shuts down or reloads, or the parent process

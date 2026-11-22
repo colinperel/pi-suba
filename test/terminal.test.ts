@@ -35,6 +35,34 @@ it("keeps the selected Rex backend's actionable failure without retrying the lau
   }
 })
 
+it("returns the parent block ID on Rex targets created through openTerminal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "suba-rex-target-"))
+  try {
+    await writeFile(
+      join(root, "rex"),
+      "#!/bin/sh\nprintf '%s\\n' '{\"block_ids\":[\"block:child-1\"]}'\n",
+      { mode: 0o700 },
+    )
+    vi.stubEnv("PATH", `${root}:${process.env.PATH}`)
+    const target = await openTerminal(
+      { kind: "rex", parentId: "block:parent-open", sessionId: "session:open" },
+      "/unused-script",
+      root,
+      "unused task",
+      "0123456789abcdef",
+    )
+    expect(target).toEqual({
+      kind: "rex",
+      id: "block:child-1",
+      sessionId: "session:open",
+      parentId: "block:parent-open",
+    })
+  } finally {
+    vi.unstubAllEnvs()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 it.each(["tmux", "rex"] as const)("identifies an unavailable selected %s backend", async (kind) => {
   const root = await mkdtemp(join(tmpdir(), "suba-missing-terminal-"))
   try {
