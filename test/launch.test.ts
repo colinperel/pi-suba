@@ -13,6 +13,7 @@ import {
   launchToolDescription,
   parseQualifiedModel,
 } from "../src/parent/tools.ts"
+import { parseConfig } from "../src/shared/config.ts"
 import { BUILTIN_DEFAULT_PROFILE, type Profile } from "../src/shared/profiles.ts"
 
 const exec = promisify(execFile)
@@ -44,11 +45,19 @@ describe("child launch validation", () => {
     process.env.SUBA_PI_EXECUTABLE = "./test/fixtures/fake-pi"
     expect(invocation()).toBe(`'${process.cwd()}/test/fixtures/fake-pi'`)
   })
-  it("enables configured extension tools alongside the profile policy", () => {
-    expect(childTools(["read", "bash"], ["process", "read"])).toEqual([
+  it.each([
+    { autoComplete: true, extra: [] },
+    { autoComplete: false, extra: ["process"] },
+  ])("selects extension tools for autoComplete=$autoComplete", ({ autoComplete, extra }) => {
+    const config = parseConfig({
+      childTools: ["lookup", "read"],
+      manualCompletionTools: ["process"],
+    })
+    expect(childTools({ tools: "read-only", autoComplete }, config)).toEqual([
       "read",
       "bash",
-      "process",
+      "lookup",
+      ...extra,
       "suba_done",
       "suba_notify",
       "suba_ask",

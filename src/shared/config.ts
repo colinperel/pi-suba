@@ -14,6 +14,7 @@ export interface SubaConfig {
   autoComplete: boolean
   childExtensions: string[]
   childTools: string[]
+  manualCompletionTools: string[]
   childFlags: ChildFlags
   activity: { pollMs: number; maxRows: number }
 }
@@ -23,6 +24,7 @@ export const DEFAULT_CONFIG: SubaConfig = {
   autoComplete: true,
   childExtensions: [],
   childTools: [],
+  manualCompletionTools: [],
   childFlags: {},
   activity: { pollMs: 500, maxRows: 8 },
 }
@@ -34,6 +36,7 @@ const ROOT_KEYS = new Set([
   "autoComplete",
   "childExtensions",
   "childTools",
+  "manualCompletionTools",
   "childFlags",
   "activity",
   // Obsolete layout keys are accepted but never read or returned.
@@ -147,6 +150,10 @@ export function parseConfig(value: unknown): SubaConfig {
       input.childTools === undefined
         ? [...DEFAULT_CONFIG.childTools]
         : toolNames(input.childTools, "childTools"),
+    manualCompletionTools:
+      input.manualCompletionTools === undefined
+        ? [...DEFAULT_CONFIG.manualCompletionTools]
+        : toolNames(input.manualCompletionTools, "manualCompletionTools"),
     childFlags:
       input.childFlags === undefined ? {} : parseChildFlags(input.childFlags, "childFlags"),
     activity: {

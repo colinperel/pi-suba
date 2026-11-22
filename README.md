@@ -300,6 +300,7 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
   "autoComplete": true,
   "childExtensions": ["npm:some-pi-package"],
   "childTools": ["some_tool"],
+  "manualCompletionTools": ["process"],
   "childFlags": { "some-extension-flag": "value" },
   "activity": {
     "pollMs": 500,
@@ -316,6 +317,7 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
 | `autoComplete`          | `true`                | Finish a child when its agent settles       |
 | `childExtensions`       | `[]`                  | Additional extensions loaded in every child |
 | `childTools`            | `[]`                  | Additional tools enabled in every child     |
+| `manualCompletionTools` | `[]`                  | Extra tools when automatic completion is off |
 | `childFlags`            | `{}`                  | Extension flags passed to every child       |
 | `activity.pollMs`       | `500`                 | Parent watcher interval in milliseconds     |
 | `activity.maxRows`      | `8`                   | Maximum rows in the activity widget         |
@@ -334,8 +336,9 @@ package sources in Pi settings.
 
 Children also start with an explicit tool allowlist: the profile's tool policy plus the Suba tools.
 Pi hides any other tool, including tools registered by `childExtensions`. List those tool names in
-`childTools` to enable them in every child, for example `"childTools": ["process"]` alongside the
-extension that registers `process`.
+`childTools` to enable them in every child. For tools that need the child to stay alive, such as
+`process`, list them in `manualCompletionTools` instead. These are added only when the resolved
+`autoComplete` is false, including when a launch overrides the profile.
 
 `childFlags` passes CLI flags registered by child extensions (`pi.registerFlag`). A string value
 becomes `--name=value`; `true` passes a boolean flag and `false` omits it. A profile's `flags` map

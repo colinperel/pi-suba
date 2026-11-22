@@ -165,8 +165,20 @@ function uniqueId(records: Map<string, ChildRecord>): string {
   while (records.has(id))
   return id
 }
-export function childTools(policy: readonly string[], configured: readonly string[]): string[] {
-  return [...new Set([...policy, ...configured, "suba_done", "suba_notify", "suba_ask"])]
+export function childTools(
+  launch: Pick<ResolvedLaunch, "tools" | "autoComplete">,
+  config: SubaConfig,
+): string[] {
+  return [
+    ...new Set([
+      ...TOOL_POLICIES[launch.tools],
+      ...config.childTools,
+      ...(launch.autoComplete ? [] : config.manualCompletionTools),
+      "suba_done",
+      "suba_notify",
+      "suba_ask",
+    ]),
+  ]
 }
 
 export function parseQualifiedModel(value: string): { provider: string; modelId: string } {
@@ -338,7 +350,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
       "-e",
       childExtension,
       "--tools",
-      childTools(TOOL_POLICIES[resolvedLaunch.tools], host.config.childTools).join(","),
+      childTools(resolvedLaunch, host.config).join(","),
       "--session",
       sessionFile,
       "--name",

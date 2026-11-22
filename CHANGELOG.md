@@ -5,6 +5,8 @@ description: Release notes for pi-suba.
 
 ## Unreleased
 
+- Add `manualCompletionTools` for tools that need the child to stay alive between turns.
+
 - Allow configured extension tools in children with the additive `childTools` setting.
 - Pass extension flags to children with the `childFlags` setting and per-profile `flags` overrides.
 - Launch visible children in tmux or Rex, with background RPC children everywhere else.
